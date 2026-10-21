@@ -1,0 +1,10 @@
+{
+  "name": "Meu Ritmo — Organizador pessoal",
+  "short_name": "Meu Ritmo",
+  "description": "Organize tarefas, hábitos, foco e leituras com leveza.",
+  "lang": "pt-BR",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f6ef",
+  "theme_color": "#28634f"
+}
