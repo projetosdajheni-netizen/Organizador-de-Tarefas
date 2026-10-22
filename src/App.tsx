@@ -82,6 +82,7 @@ export default function App() {
   const [syncCode, setSyncCode] = useState(() => localStorage.getItem('meu-ritmo-sync-code') || '')
   const [syncReady, setSyncReady] = useState(false)
   const [syncStatus, setSyncStatus] = useState('Somente neste dispositivo')
+  const [historyPeriod, setHistoryPeriod] = useState<'week' | 'month'>('week')
   const [secondsLeft, setSecondsLeft] = useState((saved.focusMinutes || 25) * 60)
   const [running, setRunning] = useState(false)
   const [showTaskForm, setShowTaskForm] = useState(false)
@@ -197,6 +198,14 @@ export default function App() {
   const completedToday = tasks.filter(t => t.done).length
   const todayKey = todayISO()
   const doneHabits = habits.filter(h => h.completed.includes(todayKey)).length
+  const historyStart = new Date()
+  if (historyPeriod === 'month') historyStart.setDate(1)
+  else historyStart.setDate(historyStart.getDate() - 6)
+  historyStart.setHours(0, 0, 0, 0)
+  const historyStartKey = `${historyStart.getFullYear()}-${String(historyStart.getMonth() + 1).padStart(2, '0')}-${String(historyStart.getDate()).padStart(2, '0')}`
+  const habitCompletionsInPeriod = habits.reduce((sum, h) => sum + h.completed.filter(day => day >= historyStartKey && day <= todayKey).length, 0)
+  const tasksCompletedInPeriod = tasks.filter(t => t.done && t.completedAt && new Date(t.completedAt) >= historyStart).length
+  const focusMinutesInPeriod = focusSessions.filter(s => new Date(s.started_at) >= historyStart).reduce((sum, s) => sum + s.duration_minutes, 0)
   const greeting = new Date().getHours() < 12 ? 'Bom dia' : new Date().getHours() < 18 ? 'Boa tarde' : 'Boa noite'
 
   function toggleTask(taskId: string) {
@@ -267,6 +276,17 @@ export default function App() {
         <PageIntro eyebrow="CONSTÂNCIA SEM PERFECCIONISMO" title="Hábitos" text="Pequenas práticas que ajudam a cuidar de você. Marque o que conseguiu fazer hoje." />
         <div className="habit-summary"><div className="habit-sun"><Flame size={24} /></div><div><strong>{doneHabits} de {habits.length} hábitos</strong><p>O progresso não precisa ser perfeito para ser real.</p></div><span className="habit-percent">{habits.length ? Math.round(doneHabits / habits.length * 100) : 0}%</span></div>
         <div className="habit-list">{habits.map(h => { const done = h.completed.includes(todayKey); return <button className={`habit-card ${done ? 'habit-done' : ''}`} key={h.id} onClick={() => toggleHabit(h.id)}><span className="habit-check">{done ? <Check size={19} /> : <Circle size={20} />}</span><span className="habit-copy"><b>{h.title}</b><small>{h.note}</small></span><span className="habit-streak">{h.completed.length} dia{h.completed.length === 1 ? '' : 's'}</span></button> })}</div>
+        <section className="history-panel">
+          <div className="section-heading"><div><p className="eyebrow">SEU PROGRESSO REAL</p><h2>Histórico</h2></div>
+            <div className="history-switch"><button className={historyPeriod === 'week' ? 'primary-button' : 'secondary-button'} onClick={() => setHistoryPeriod('week')}>7 dias</button><button className={historyPeriod === 'month' ? 'primary-button' : 'secondary-button'} onClick={() => setHistoryPeriod('month')}>Este mês</button></div>
+          </div>
+          <p className="subheading">Contagem baseada nos registros salvos, sem estimar dias que não foram marcados.</p>
+          <div className="stat-grid">
+            <article className="stat-card stat-green"><span className="stat-label">Cumprimentos de hábitos</span><strong>{habitCompletionsInPeriod}</strong></article>
+            <article className="stat-card stat-sand"><span className="stat-label">Tarefas concluídas com data</span><strong>{tasksCompletedInPeriod}</strong></article>
+            <article className="stat-card stat-blue"><span className="stat-label">Minutos de foco registrados</span><strong>{focusMinutesInPeriod}</strong></article>
+          </div>
+        </section>
         <div className="gentle-note"><Leaf size={20} /><p><b>Lembrete gentil</b><br />O hábito de se movimentar pode ser pulado quando o dia estiver cheio — sem virar uma dívida para amanhã.</p></div>
       </section>}
 
