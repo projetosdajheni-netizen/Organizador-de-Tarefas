@@ -1,0 +1,25 @@
+name: Validar Fase 2
+
+on:
+  pull_request:
+    branches:
+      - feat/fase-1-organizador-pessoal
+  push:
+    branches:
+      - feat/fase-2-supabase-sync
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Instalar dependências
+        run: npm ci
+      - name: Validar TypeScript e gerar build
+        run: npm run build
