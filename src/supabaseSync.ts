@@ -13,7 +13,7 @@ export type SyncData = { tasks: SyncTask[]; habits: SyncHabit[]; library: SyncLi
 async function request<T>(syncCode: string, action: 'load' | 'save', data?: SyncData): Promise<T> {
   const response = await fetch(SYNC_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', apikey: 'sb_publishable_14zi-65trGd1cr6JZEZxVg_aJ8itflN' },
     body: JSON.stringify({ syncCode, action, ...(data ? { data } : {}) }),
   })
   const result = await response.json()
