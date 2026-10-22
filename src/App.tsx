@@ -186,7 +186,7 @@ export default function App() {
   useEffect(() => {
     if (!running) return
     const timer = window.setInterval(() => setSecondsLeft(s => {
-      if (s <= 1) { window.clearInterval(timer); setRunning(false); setFocusSessions(prev => [...prev, { id: `focus-${Date.now()}`, started_at: new Date(Date.now() - focusMinutes * 60000).toISOString(), ended_at: new Date().toISOString(), duration_minutes: focusMinutes, completed: true }]); return 0 }
+      if (s <= 1) { window.clearInterval(timer); setRunning(false); setFocusSessions(prev => [...prev, { id: crypto.randomUUID(), started_at: new Date(Date.now() - focusMinutes * 60000).toISOString(), ended_at: new Date().toISOString(), duration_minutes: focusMinutes, completed: true }]); return 0 }
       return s - 1
     }), 1000)
     return () => window.clearInterval(timer)
@@ -275,7 +275,7 @@ export default function App() {
       {tab === 'Hábitos' && <section className="page-view">
         <PageIntro eyebrow="CONSTÂNCIA SEM PERFECCIONISMO" title="Hábitos" text="Pequenas práticas que ajudam a cuidar de você. Marque o que conseguiu fazer hoje." />
         <div className="habit-summary"><div className="habit-sun"><Flame size={24} /></div><div><strong>{doneHabits} de {habits.length} hábitos</strong><p>O progresso não precisa ser perfeito para ser real.</p></div><span className="habit-percent">{habits.length ? Math.round(doneHabits / habits.length * 100) : 0}%</span></div>
-        <div className="habit-list">{habits.map(h => { const done = h.completed.includes(todayKey); return <button className={`habit-card ${done ? 'habit-done' : ''}`} key={h.id} onClick={() => toggleHabit(h.id)}><span className="habit-check">{done ? <Check size={19} /> : <Circle size={20} />}</span><span className="habit-copy"><b>{h.title}</b><small>{h.note}</small></span><span className="habit-streak">{h.completed.length} dia{h.completed.length === 1 ? '' : 's'}</span></button> })}</div>
+        <div className="habit-list">{habits.map(h => { const done = h.completed.includes(todayKey); return <button className={`habit-card ${done ? 'habit-done' : ''}`} key={h.id} onClick={() => toggleHabit(h.id)}><span className="habit-check">{done ? <Check size={19} /> : <Circle size={20} />}</span><span className="habit-copy"><b>{h.title}</b><small>{h.note} · {h.periodicity === 'weekly' ? 'Semanal' : h.periodicity === 'weekdays' ? 'Dias úteis' : h.periodicity === 'custom' ? 'Personalizada' : 'Diário'}</small></span><span className="habit-streak">{h.completed.length} dia{h.completed.length === 1 ? '' : 's'}</span></button> })}</div>
         <section className="history-panel">
           <div className="section-heading"><div><p className="eyebrow">SEU PROGRESSO REAL</p><h2>Histórico</h2></div>
             <div className="history-switch"><button className={historyPeriod === 'week' ? 'primary-button' : 'secondary-button'} onClick={() => setHistoryPeriod('week')}>7 dias</button><button className={historyPeriod === 'month' ? 'primary-button' : 'secondary-button'} onClick={() => setHistoryPeriod('month')}>Este mês</button></div>
