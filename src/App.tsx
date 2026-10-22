@@ -10,11 +10,11 @@ type Tab = 'Hoje' | 'Tarefas' | 'Hábitos' | 'Foco' | 'Biblioteca'
 type Task = {
   id: string; title: string; dueDate: string; dueTime: string; duration: number
   priority: 'alta' | 'media' | 'baixa'; availability: 'qualquer' | 'manha' | 'tarde' | 'noite'
-  done: boolean; createdAt: number; category: string
+  done: boolean; createdAt: number; category: string; completedAt?: string | null
 }
-type Habit = { id: string; title: string; note: string; completed: string[] }
+type Habit = { id: string; title: string; note: string; completed: string[]; periodicity?: 'daily' | 'weekly' | 'weekdays' | 'custom' }
 type LibraryItem = { id: string; title: string; kind: 'Leitura' | 'Curso' | 'Anotação'; note: string; done: boolean }
-type Persisted = { tasks: Task[]; habits: Habit[]; library: LibraryItem[]; activeTab: Tab; focusMinutes: number }
+type Persisted = { tasks: Task[]; habits: Habit[]; library: LibraryItem[]; activeTab: Tab; focusMinutes: number; focusSessions?: FocusSession[] }
 
 const todayISO = () => {
   const d = new Date()
@@ -78,6 +78,10 @@ export default function App() {
   const [habits, setHabits] = useState<Habit[]>(saved.habits || starterHabits)
   const [library, setLibrary] = useState<LibraryItem[]>(saved.library || starterLibrary)
   const [focusMinutes, setFocusMinutes] = useState(saved.focusMinutes || 25)
+  const [focusSessions, setFocusSessions] = useState<FocusSession[]>(saved.focusSessions || [])
+  const [syncCode, setSyncCode] = useState(() => localStorage.getItem('meu-ritmo-sync-code') || '')
+  const [syncReady, setSyncReady] = useState(false)
+  const [syncStatus, setSyncStatus] = useState('Somente neste dispositivo')
   const [secondsLeft, setSecondsLeft] = useState((saved.focusMinutes || 25) * 60)
   const [running, setRunning] = useState(false)
   const [showTaskForm, setShowTaskForm] = useState(false)
@@ -87,16 +91,105 @@ export default function App() {
   const [note, setNote] = useState('')
 
   useEffect(() => {
-    localStorage.setItem('meu-ritmo-v1', JSON.stringify({ tasks, habits, library, activeTab: tab, focusMinutes }))
-  }, [tasks, habits, library, tab, focusMinutes])
+    localStorage.setItem('meu-ritmo-v1', JSON.stringify({ tasks, habits, library, activeTab: tab, focusMinutes, focusSessions }))
+  }, [tasks, habits, library, tab, focusMinutes, focusSessions])
+  useEffect(() => {
+    if (!syncCode) { setSyncReady(false); setSyncStatus('Somente neste dispositivo'); return }
+    let cancelled = false
+    setSyncReady(false)
+    setSyncStatus('Conectando à nuvem…')
+    loadRemote(syncCode).then(async remote => {
+      if (cancelled) return
+      const localData = { tasks, habits, library, focusSessions } as SyncData
+      const remoteHasData = remote.tasks.length + remote.habits.length + remote.library.length + remote.focusSessions.length > 0
+      if (!remoteHasData) {
+        await saveRemote(syncCode, localData)
+      } else {
+        const mergedTasks = [...remote.tasks]
+        for (const item of tasks) if (!mergedTasks.some(x => x.id === item.id)) mergedTasks.push(item)
+        const mergedHabits = [...remote.habits].map(h => {
+          const local = habits.find(x => x.id === h.id)
+          return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h
+        })
+        for (const item of habits) if (!mergedHabits.some(x => x.id === item.id)) mergedHabits.push(item)
+        const mergedLibrary = [...remote.library]
+        for (const item of library) if (!mergedLibrary.some(x => x.id === item.id)) mergedLibrary.push(item)
+        const mergedFocus = [...remote.focusSessions]
+        for (const item of focusSessions) if (!mergedFocus.some(x => x.id === item.id)) mergedFocus.push(item)
+        setTasks(mergedTasks as Task[])
+        setHabits(mergedHabits as Habit[])
+        setLibrary(mergedLibrary as LibraryItem[])
+        setFocusSessions(mergedFocus)
+        await saveRemote(syncCode, { tasks: mergedTasks, habits: mergedHabits, library: mergedLibrary, focusSessions: mergedFocus } as SyncData)
+      }
+      if (!cancelled) { setSyncReady(true); setSyncStatus('Sincronizado com a nuvem') }
+    }).catch(() => {
+      if (!cancelled) setSyncStatus('Falha ao conectar — dados locais preservados')
+    })
+    return () => { cancelled = true }
+  // Initial local state is intentionally captured for safe first-time migration.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncCode])
+
+  useEffect(() => {
+    if (!syncCode || !syncReady) return
+    const timer = window.setTimeout(() => {
+      saveRemote(syncCode, { tasks, habits, library, focusSessions } as SyncData)
+        .then(() => setSyncStatus('Sincronizado com a nuvem'))
+        .catch(() => setSyncStatus('Sem conexão — alterações locais preservadas'))
+    }, 700)
+    return () => window.clearTimeout(timer)
+  }, [syncCode, syncReady, tasks, habits, library, focusSessions])
+
+  useEffect(() => {
+    if (!syncCode || !syncReady) return
+    const timer = window.setInterval(() => {
+      loadRemote(syncCode).then(remote => {
+        setTasks(current => {
+          const merged = [...remote.tasks] as Task[]
+          for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item)
+          return merged
+        })
+        setHabits(current => {
+          const merged = [...remote.habits].map(h => {
+            const local = current.find(x => x.id === h.id)
+            return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h
+          }) as Habit[]
+          for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item)
+          return merged
+        })
+        setLibrary(current => {
+          const merged = [...remote.library] as LibraryItem[]
+          for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item)
+          return merged
+        })
+        setFocusSessions(current => {
+          const merged = [...remote.focusSessions]
+          for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item)
+          return merged
+        })
+        setSyncStatus('Sincronizado com a nuvem')
+      }).catch(() => setSyncStatus('Sem conexão — tentando novamente'))
+    }, 8000)
+    return () => window.clearInterval(timer)
+  }, [syncCode, syncReady])
+
+  function connectDevices() {
+    const code = window.prompt('Crie um código de sincronização com pelo menos 12 caracteres. Use exatamente o mesmo código no celular e no computador. Quem tiver esse código poderá acessar os dados sincronizados.')
+    if (!code) return
+    if (code.trim().length < 12) { window.alert('O código precisa ter pelo menos 12 caracteres.'); return }
+    localStorage.setItem('meu-ritmo-sync-code', code.trim())
+    setSyncCode(code.trim())
+  }
+
   useEffect(() => {
     if (!running) return
     const timer = window.setInterval(() => setSecondsLeft(s => {
-      if (s <= 1) { window.clearInterval(timer); setRunning(false); return 0 }
+      if (s <= 1) { window.clearInterval(timer); setRunning(false); setFocusSessions(prev => [...prev, { id: `focus-${Date.now()}`, started_at: new Date(Date.now() - focusMinutes * 60000).toISOString(), ended_at: new Date().toISOString(), duration_minutes: focusMinutes, completed: true }]); return 0 }
       return s - 1
     }), 1000)
     return () => window.clearInterval(timer)
-  }, [running])
+  }, [running, focusMinutes])
   useEffect(() => { if (!running) setSecondsLeft(focusMinutes * 60) }, [focusMinutes, running])
 
   const orderedTasks = useMemo(() => sortTasks(tasks.filter(t => !t.done)), [tasks])
@@ -107,7 +200,7 @@ export default function App() {
   const greeting = new Date().getHours() < 12 ? 'Bom dia' : new Date().getHours() < 18 ? 'Boa tarde' : 'Boa noite'
 
   function toggleTask(taskId: string) {
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, done: !t.done } : t))
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, done: !t.done, completedAt: !t.done ? new Date().toISOString() : null } : t))
   }
   function addTask(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -136,7 +229,7 @@ export default function App() {
       <a className="brand" href="#inicio" onClick={e => { e.preventDefault(); setTab('Hoje') }} aria-label="Meu Ritmo, início">
         <span className="brand-mark"><Waves size={20} /></span><span>meu <b>ritmo</b></span>
       </a>
-      <div className="topbar-right"><span className="soft-status"><span className="status-dot" /> Seu espaço, no seu ritmo</span><button className="avatar" aria-label="Perfil">J</button></div>
+      <div className="topbar-right"><span className="soft-status"><span className="status-dot" /> {syncStatus}</span><button className="secondary-button" onClick={connectDevices}>{syncCode ? 'Configurar sincronização' : 'Sincronizar dispositivos'}</button><button className="avatar" aria-label="Perfil">J</button></div>
     </header>
     <main className="main-content">
       {tab === 'Hoje' && <section className="today-view">
@@ -200,7 +293,7 @@ export default function App() {
 
     {showTaskForm && <div className="modal-backdrop" onClick={() => setShowTaskForm(false)}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="task-modal-title" onClick={e => e.stopPropagation()}><div className="modal-head"><div><p className="eyebrow">NOVO PASSO</p><h2 id="task-modal-title">Adicionar tarefa</h2></div><button className="icon-button" onClick={() => setShowTaskForm(false)} aria-label="Fechar"><X size={20} /></button></div><form onSubmit={addTask} className="form-grid"><label className="wide-field">O que precisa ser feito?<input autoFocus required value={newTask.title} onChange={e => setNewTask({ ...newTask, title: e.target.value })} placeholder="Ex.: revisar uma aula de AWS" /></label><label>Prazo<input type="date" value={newTask.dueDate} onChange={e => setNewTask({ ...newTask, dueDate: e.target.value })} /></label><label>Horário<input type="time" value={newTask.dueTime} onChange={e => setNewTask({ ...newTask, dueTime: e.target.value })} /></label><label>Duração (min)<input type="number" min="5" step="5" value={newTask.duration} onChange={e => setNewTask({ ...newTask, duration: e.target.value })} /></label><label>Categoria<select value={newTask.category} onChange={e => setNewTask({ ...newTask, category: e.target.value })}><option>Pessoal</option><option>Estudos</option><option>Trabalho</option><option>Bem-estar</option><option>Família</option><option>Leitura</option></select></label><label>Prioridade<select value={newTask.priority} onChange={e => setNewTask({ ...newTask, priority: e.target.value as Task['priority'] })}><option value="alta">Alta</option><option value="media">Média</option><option value="baixa">Baixa</option></select></label><label>Disponibilidade<select value={newTask.availability} onChange={e => setNewTask({ ...newTask, availability: e.target.value as Task['availability'] })}><option value="qualquer">Qualquer horário</option><option value="manha">Manhã</option><option value="tarde">Tarde</option><option value="noite">Noite</option></select></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShowTaskForm(false)}>Cancelar</button><button className="primary-button" type="submit"><Plus size={17} /> Salvar tarefa</button></div></form></section></div>}
     {showLibraryForm && <div className="modal-backdrop" onClick={() => setShowLibraryForm(false)}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="library-modal-title" onClick={e => e.stopPropagation()}><div className="modal-head"><div><p className="eyebrow">GUARDE PARA DEPOIS</p><h2 id="library-modal-title">Novo item</h2></div><button className="icon-button" onClick={() => setShowLibraryForm(false)} aria-label="Fechar"><X size={20} /></button></div><form onSubmit={addLibraryItem} className="form-grid"><label className="wide-field">Título<input autoFocus required value={newLibrary.title} onChange={e => setNewLibrary({ ...newLibrary, title: e.target.value })} placeholder="Nome do curso, livro ou ideia" /></label><label className="wide-field">Tipo<select value={newLibrary.kind} onChange={e => setNewLibrary({ ...newLibrary, kind: e.target.value as LibraryItem['kind'] })}><option>Leitura</option><option>Curso</option><option>Anotação</option></select></label><label className="wide-field">Observações<textarea rows={3} value={newLibrary.note} onChange={e => setNewLibrary({ ...newLibrary, note: e.target.value })} placeholder="Onde parou? O que quer lembrar?" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShowLibraryForm(false)}>Cancelar</button><button className="primary-button" type="submit"><Plus size={17} /> Salvar item</button></div></form></section></div>}
-    <footer className="footer-note"><span>Feito para a vida real</span><span>·</span><span>Seus dados ficam neste dispositivo nesta fase.</span></footer>
+    <footer className="footer-note"><span>Feito para a vida real</span><span>·</span><span>{syncCode ? 'Dados sincronizados com Supabase.' : 'Dados salvos neste dispositivo. Ative a sincronização para compartilhar.'}</span></footer>
   </div>
 }
 
