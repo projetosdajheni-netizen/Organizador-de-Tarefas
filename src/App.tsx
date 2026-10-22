@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { loadRemote, saveRemote, type SyncData } from './supabaseSync'
+import { loadRemote, saveRemote, type FocusSession, type SyncData } from './supabaseSync'
 import {
   AlarmClock, BookOpen, CalendarDays, Check, CheckCircle2, ChevronRight,
   Circle, Clock3, Coffee, Flame, Leaf, ListTodo, Pause, Play, Plus,
