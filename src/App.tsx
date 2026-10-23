@@ -114,8 +114,10 @@ export default function App() {
   const [note, setNote] = useState('')
 
   useEffect(() => {
-    localStorage.setItem('meu-ritmo-v1', JSON.stringify({ tasks, habits, library, activeTab: tab, focusMinutes, focusSessions }))
-  }, [tasks, habits, library, tab, focusMinutes, focusSessions])
+    const data = JSON.stringify({ tasks, habits, library, activeTab: tab, focusMinutes, focusSessions })
+    if (session?.user.id) localStorage.setItem('meu-ritmo-v1:' + session.user.id, data)
+    else if (!localStorage.getItem('meu-ritmo-local-history-owner')) localStorage.setItem('meu-ritmo-v1', data)
+  }, [tasks, habits, library, tab, focusMinutes, focusSessions, session?.user.id])
 
   useEffect(() => {
     let alive = true
@@ -130,13 +132,27 @@ export default function App() {
     setSyncReady(false); setSyncStatus('Carregando seu histórico…')
     ;(async () => {
       try {
+        const userId = session!.user.id
+        const migrationOwner = localStorage.getItem('meu-ritmo-local-history-owner')
+        const isFirstLocalMigration = !migrationOwner
+        const userSavedRaw = localStorage.getItem('meu-ritmo-v1:' + userId)
+        let userSaved: Partial<Persisted> = {}
+        try { userSaved = userSavedRaw ? JSON.parse(userSavedRaw) as Partial<Persisted> : {} } catch { userSaved = {} }
         if (syncCode) { await claimLegacyData(token, syncCode); localStorage.removeItem('meu-ritmo-sync-code'); setSyncCode('') }
         const remote = await loadRemote(token)
         if (cancelled) return
-        const localData = { tasks, habits, library, focusSessions } as SyncData
+        const localData = {
+          tasks: (isFirstLocalMigration ? tasks : userSaved.tasks || []) as Task[],
+          habits: (isFirstLocalMigration ? habits : userSaved.habits || []) as Habit[],
+          library: (isFirstLocalMigration ? library : userSaved.library || []) as LibraryItem[],
+          focusSessions: (isFirstLocalMigration ? focusSessions : userSaved.focusSessions || []) as FocusSession[],
+        } as SyncData
         const hasRemote = remote.tasks.length + remote.habits.length + remote.library.length + remote.focusSessions.length > 0
-        if (!hasRemote) await saveRemote(token, localData)
-        else {
+        const hasLocal = localData.tasks.length + localData.habits.length + localData.library.length + localData.focusSessions.length > 0
+        if (!hasRemote && hasLocal) await saveRemote(token, localData)
+        else if (!hasRemote && !hasLocal) {
+          setTasks([]); setHabits([]); setLibrary([]); setFocusSessions([])
+        } else {
           const mergedTasks = mergeTasks(remote.tasks as Task[], tasks)
           const mergedHabits = [...remote.habits].map(h => { const local = habits.find(x => x.id === h.id); return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h })
           for (const item of habits) if (!mergedHabits.some(x => x.id === item.id)) mergedHabits.push(item)
@@ -145,6 +161,11 @@ export default function App() {
           setTasks(mergedTasks as Task[]); setHabits(mergedHabits as Habit[]); setLibrary(mergedLibrary as LibraryItem[]); setFocusSessions(mergedFocus)
           await saveRemote(token, { tasks: mergedTasks, habits: mergedHabits, library: mergedLibrary, focusSessions: mergedFocus } as SyncData)
         }
+        if (isFirstLocalMigration) localStorage.setItem('meu-ritmo-local-history-owner', userId)
+        setTasks(current => hasRemote ? current : localData.tasks)
+        setHabits(current => hasRemote ? current : localData.habits)
+        setLibrary(current => hasRemote ? current : localData.library)
+        setFocusSessions(current => hasRemote ? current : localData.focusSessions)
         if (!cancelled) { setSyncReady(true); setSyncStatus('Histórico sincronizado com sua conta') }
       } catch (error) { if (!cancelled) setSyncStatus(error instanceof Error ? error.message : 'Falha ao carregar seus dados') }
     })()
@@ -180,7 +201,7 @@ export default function App() {
       else { const { error } = await supabase.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword }); if (error) throw error }
     } catch (error) { setAuthError(error instanceof Error ? error.message : 'Não foi possível autenticar.') } finally { setAuthBusy(false) }
   }
-  async function signOut() { await supabase.auth.signOut(); setTab('Hoje'); setSyncReady(false) }
+  async function signOut() { await supabase.auth.signOut(); setTab('Hoje'); setSyncReady(false); setTasks(starterTasks); setHabits(starterHabits); setLibrary(starterLibrary); setFocusSessions([]) }
   useEffect(() => {
     if (!running) return
     const timer = window.setInterval(() => setSecondsLeft(s => {
