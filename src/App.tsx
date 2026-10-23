@@ -39,7 +39,11 @@ const starterLibrary: LibraryItem[] = [
   { id: 'l2', title: 'Leitura em andamento', kind: 'Leitura', note: 'Anotar uma ideia que vale guardar.', done: false },
 ]
 const readSaved = (): Partial<Persisted> => {
-  try { return JSON.parse(localStorage.getItem('meu-ritmo-v1') || '{}') as Partial<Persisted> } catch { return {} }
+  try {
+    const legacyOwner = localStorage.getItem('meu-ritmo-local-history-owner')
+    const key = legacyOwner ? 'meu-ritmo-v1:' + legacyOwner : 'meu-ritmo-v1'
+    return JSON.parse(localStorage.getItem(key) || '{}') as Partial<Persisted>
+  } catch { return {} }
 }
 const getTimeWindow = (date = new Date()): Task['availability'] => {
   const hour = date.getHours()
@@ -115,9 +119,11 @@ export default function App() {
 
   useEffect(() => {
     const data = JSON.stringify({ tasks, habits, library, activeTab: tab, focusMinutes, focusSessions })
-    if (session?.user.id) localStorage.setItem('meu-ritmo-v1:' + session.user.id, data)
-    else if (!localStorage.getItem('meu-ritmo-local-history-owner')) localStorage.setItem('meu-ritmo-v1', data)
-  }, [tasks, habits, library, tab, focusMinutes, focusSessions, session?.user.id])
+    const legacyOwner = localStorage.getItem('meu-ritmo-local-history-owner')
+    if (session?.user.id && (!legacyOwner || legacyOwner === session.user.id || syncReady)) {
+      localStorage.setItem('meu-ritmo-v1:' + session.user.id, data)
+    } else if (!session && !legacyOwner) localStorage.setItem('meu-ritmo-v1', data)
+  }, [tasks, habits, library, tab, focusMinutes, focusSessions, session?.user.id, syncReady])
 
   useEffect(() => {
     let alive = true
