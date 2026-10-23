@@ -159,11 +159,12 @@ export default function App() {
         else if (!hasRemote && !hasLocal) {
           setTasks([]); setHabits([]); setLibrary([]); setFocusSessions([])
         } else {
-          const mergedTasks = mergeTasks(remote.tasks as Task[], tasks)
-          const mergedHabits = [...remote.habits].map(h => { const local = habits.find(x => x.id === h.id); return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h })
-          for (const item of habits) if (!mergedHabits.some(x => x.id === item.id)) mergedHabits.push(item)
-          const mergedLibrary = [...remote.library]; for (const item of library) if (!mergedLibrary.some(x => x.id === item.id)) mergedLibrary.push(item)
-          const mergedFocus = [...remote.focusSessions]; for (const item of focusSessions) if (!mergedFocus.some(x => x.id === item.id)) mergedFocus.push(item)
+          // Merge only this account's saved local history, never stale state from another session.
+          const mergedTasks = mergeTasks(remote.tasks as Task[], localData.tasks)
+          const mergedHabits = [...remote.habits].map(h => { const local = localData.habits.find(x => x.id === h.id); return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h })
+          for (const item of localData.habits) if (!mergedHabits.some(x => x.id === item.id)) mergedHabits.push(item)
+          const mergedLibrary = [...remote.library]; for (const item of localData.library) if (!mergedLibrary.some(x => x.id === item.id)) mergedLibrary.push(item)
+          const mergedFocus = [...remote.focusSessions]; for (const item of localData.focusSessions) if (!mergedFocus.some(x => x.id === item.id)) mergedFocus.push(item)
           setTasks(mergedTasks as Task[]); setHabits(mergedHabits as Habit[]); setLibrary(mergedLibrary as LibraryItem[]); setFocusSessions(mergedFocus)
           await saveRemote(token, { tasks: mergedTasks, habits: mergedHabits, library: mergedLibrary, focusSessions: mergedFocus } as SyncData)
         }
