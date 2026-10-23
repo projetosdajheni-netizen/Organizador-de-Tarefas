@@ -94,6 +94,7 @@ export default function App() {
   const [syncReady, setSyncReady] = useState(false)
   const [syncStatus, setSyncStatus] = useState('Somente neste dispositivo')
   const [historyPeriod, setHistoryPeriod] = useState<'week' | 'month'>('week')
+  const [availableMinutes, setAvailableMinutes] = useState(25)
   const [secondsLeft, setSecondsLeft] = useState((saved.focusMinutes || 25) * 60)
   const [running, setRunning] = useState(false)
   const [showTaskForm, setShowTaskForm] = useState(false)
@@ -202,6 +203,8 @@ export default function App() {
   const visibleTasks = tasks.filter(t => !t.deletedAt)
   const orderedTasks = useMemo(() => sortTasks(tasks.filter(t => !t.done && !t.deletedAt)), [tasks])
   const todayTasks = orderedTasks.filter(t => t.dueDate === todayISO() || urgency(t) < 3)
+  const isSelfCareDay = new Date().getDay() === 0
+  const suggestedTask = isSelfCareDay ? undefined : orderedTasks.find(task => task.duration <= availableMinutes)
   const completedToday = visibleTasks.filter(t => t.done).length
   const todayKey = todayISO()
   const doneHabits = habits.filter(h => h.completed.includes(todayKey)).length
@@ -267,6 +270,14 @@ export default function App() {
           <article className="stat-card stat-sand"><span className="stat-icon"><Leaf size={19} /></span><span className="stat-label">Hábitos de hoje</span><strong>{doneHabits}<small> de {habits.length}</small></strong><div className="progress-track"><span style={{ width: habits.length ? `${doneHabits / habits.length * 100}%` : '0%' }} /></div></article>
           <article className="stat-card stat-blue"><span className="stat-icon"><Clock3 size={19} /></span><span className="stat-label">Próximo passo</span><strong className="next-step">{todayTasks[0] ? todayTasks[0].title : 'Pausa merecida'}</strong><span className="tiny-note">{todayTasks[0] ? `${todayTasks[0].duration} min · ${todayTasks[0].category}` : 'Você pode respirar.'}</span></article>
         </div>
+        <section className="planning-card">
+          <div className="planning-heading"><span className="planning-icon"><Sparkles size={18} /></span><div><p className="eyebrow">PLANEJAMENTO FLEXÍVEL</p><h2>O que cabe no seu tempo?</h2></div></div>
+          {isSelfCareDay ? <div className="planning-rest"><Coffee size={21} /><div><b>Domingo protegido: seu dia de autocuidado</b><p>Hoje, a sugestão é descansar. Nenhuma tarefa será remarcada ou alterada automaticamente.</p></div></div> : <>
+            <p className="planning-description">Escolha quanto tempo você tem livre. Vou sugerir uma tarefa que caiba nesse intervalo, sem alterar sua agenda.</p>
+            <div className="time-options" role="group" aria-label="Tempo livre disponível">{[15, 25, 45, 60].map(minutes => <button key={minutes} className={availableMinutes === minutes ? 'time-option active' : 'time-option'} onClick={() => setAvailableMinutes(minutes)}>{minutes} min</button>)}</div>
+            <div className="planning-recommendation">{suggestedTask ? <><span className="recommendation-label">SUGESTÃO PARA AGORA</span><b>{suggestedTask.title}</b><span>{suggestedTask.duration} min · {suggestedTask.category} · prioridade {suggestedTask.priority === 'alta' ? 'alta' : suggestedTask.priority === 'media' ? 'média' : 'baixa'}</span><button className="text-button" onClick={() => setTab('Tarefas')}>Ver tarefa <ChevronRight size={15} /></button></> : <><b>Nenhuma tarefa cadastrada cabe nesse intervalo.</b><span>Você pode aumentar o tempo disponível ou cadastrar uma atividade curta de estudo, leitura ou bem-estar.</span><button className="text-button" onClick={() => setShowTaskForm(true)}>Adicionar tarefa <Plus size={15} /></button></>}</div>
+          </>}
+        </section>
         <div className="section-heading task-section-heading"><div><p className="eyebrow">PEQUENAS AÇÕES, GRANDES CAMINHOS</p><h2>O que vem primeiro</h2></div><button className="round-add" onClick={() => setShowTaskForm(true)} aria-label="Adicionar tarefa"><Plus size={19} /></button></div>
         <div className="task-list">
           {todayTasks.length ? todayTasks.slice(0, 4).map((task, i) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onDelete={() => deleteTask(task)} rank={i + 1} />) : <EmptyState title="Seu dia está aberto" text="Adicione uma tarefa quando quiser dar forma ao seu tempo." />}
