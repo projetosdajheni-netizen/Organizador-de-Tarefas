@@ -35,3 +35,61 @@ CREATE INDEX IF NOT EXISTS habits_owner_id_idx ON public.habits(owner_id);
 CREATE INDEX IF NOT EXISTS habit_completions_owner_id_idx ON public.habit_completions(owner_id);
 CREATE INDEX IF NOT EXISTS focus_sessions_owner_id_idx ON public.focus_sessions(owner_id);
 CREATE INDEX IF NOT EXISTS library_items_owner_id_idx ON public.library_items(owner_id);
+
+-- Claim the legacy sync space and every related row in one transaction.
+-- Only the server-side service role may execute this function.
+CREATE OR REPLACE FUNCTION public.claim_meu_ritmo_legacy_space(p_space_id uuid, p_user_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_owner uuid;
+  n_tasks integer;
+  n_habits integer;
+  n_completions integer;
+  n_focus integer;
+  n_library integer;
+BEGIN
+  SELECT owner_id INTO v_owner
+  FROM public.sync_spaces
+  WHERE id = p_space_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'legacy_space_not_found';
+  END IF;
+  IF v_owner IS NOT NULL AND v_owner <> p_user_id THEN
+    RAISE EXCEPTION 'legacy_space_owned_by_another_user';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM public.tasks WHERE space_id = p_space_id AND owner_id IS NOT NULL AND owner_id <> p_user_id)
+     OR EXISTS (SELECT 1 FROM public.habits WHERE space_id = p_space_id AND owner_id IS NOT NULL AND owner_id <> p_user_id)
+     OR EXISTS (SELECT 1 FROM public.habit_completions WHERE space_id = p_space_id AND owner_id IS NOT NULL AND owner_id <> p_user_id)
+     OR EXISTS (SELECT 1 FROM public.focus_sessions WHERE space_id = p_space_id AND owner_id IS NOT NULL AND owner_id <> p_user_id)
+     OR EXISTS (SELECT 1 FROM public.library_items WHERE space_id = p_space_id AND owner_id IS NOT NULL AND owner_id <> p_user_id) THEN
+    RAISE EXCEPTION 'legacy_rows_owned_by_another_user';
+  END IF;
+
+  UPDATE public.sync_spaces SET owner_id = p_user_id, last_seen_at = now() WHERE id = p_space_id;
+  UPDATE public.tasks SET owner_id = p_user_id WHERE space_id = p_space_id AND owner_id IS NULL;
+  GET DIAGNOSTICS n_tasks = ROW_COUNT;
+  UPDATE public.habits SET owner_id = p_user_id WHERE space_id = p_space_id AND owner_id IS NULL;
+  GET DIAGNOSTICS n_habits = ROW_COUNT;
+  UPDATE public.habit_completions SET owner_id = p_user_id WHERE space_id = p_space_id AND owner_id IS NULL;
+  GET DIAGNOSTICS n_completions = ROW_COUNT;
+  UPDATE public.focus_sessions SET owner_id = p_user_id WHERE space_id = p_space_id AND owner_id IS NULL;
+  GET DIAGNOSTICS n_focus = ROW_COUNT;
+  UPDATE public.library_items SET owner_id = p_user_id WHERE space_id = p_space_id AND owner_id IS NULL;
+  GET DIAGNOSTICS n_library = ROW_COUNT;
+
+  RETURN jsonb_build_object('ok', true, 'migrated', jsonb_build_object(
+    'tasks', n_tasks, 'habits', n_habits, 'habit_completions', n_completions,
+    'focus_sessions', n_focus, 'library_items', n_library
+  ));
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.claim_meu_ritmo_legacy_space(uuid, uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.claim_meu_ritmo_legacy_space(uuid, uuid) TO service_role;
