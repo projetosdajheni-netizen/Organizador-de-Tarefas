@@ -3,7 +3,7 @@ const SYNC_URL = 'https://lrpjprbfwqzaywmrmlvd.supabase.co/functions/v1/meu-ritm
 export type SyncTask = {
   id: string; title: string; dueDate: string; dueTime: string; duration: number
   priority: 'alta' | 'media' | 'baixa'; availability: 'qualquer' | 'manha' | 'tarde' | 'noite'
-  done: boolean; createdAt: number; category: string; completedAt?: string | null
+  done: boolean; createdAt: number; category: string; completedAt?: string | null; deletedAt?: string | null
 }
 export type SyncHabit = { id: string; title: string; note: string; periodicity?: 'daily' | 'weekly' | 'weekdays' | 'custom'; completed: string[] }
 export type SyncLibraryItem = { id: string; title: string; kind: 'Leitura' | 'Curso' | 'Anotação'; note: string; done: boolean }
