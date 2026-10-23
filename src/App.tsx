@@ -203,7 +203,7 @@ export default function App() {
   async function submitAuth(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault(); setAuthBusy(true); setAuthError(''); setAuthMessage('')
     try {
-      if (authMode === 'signup') { const { data, error } = await supabase.auth.signUp({ email: authEmail.trim(), password: authPassword, options: { emailRedirectTo: window.location.origin } }); if (error) throw error; if (!data.session) setAuthMessage('Cadastro iniciado. Confira seu e-mail para confirmar a conta e depois entre.') }
+      if (authMode === 'signup') { const { data, error } = await supabase.auth.signUp({ email: authEmail.trim(), password: authPassword, options: { emailRedirectTo: window.location.origin + window.location.pathname } }); if (error) throw error; if (!data.session) setAuthMessage('Cadastro iniciado. Confira seu e-mail para confirmar a conta e depois entre.') }
       else { const { error } = await supabase.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword }); if (error) throw error }
     } catch (error) { setAuthError(error instanceof Error ? error.message : 'Não foi possível autenticar.') } finally { setAuthBusy(false) }
   }
