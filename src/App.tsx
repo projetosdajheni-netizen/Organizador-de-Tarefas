@@ -10,7 +10,7 @@ type Tab = 'Hoje' | 'Tarefas' | 'Hábitos' | 'Foco' | 'Biblioteca'
 type Task = {
   id: string; title: string; dueDate: string; dueTime: string; duration: number
   priority: 'alta' | 'media' | 'baixa'; availability: 'qualquer' | 'manha' | 'tarde' | 'noite'
-  done: boolean; createdAt: number; category: string; completedAt?: string | null
+  done: boolean; createdAt: number; category: string; completedAt?: string | null; deletedAt?: string | null
 }
 type Habit = { id: string; title: string; note: string; completed: string[]; periodicity?: 'daily' | 'weekly' | 'weekdays' | 'custom' }
 type LibraryItem = { id: string; title: string; kind: 'Leitura' | 'Curso' | 'Anotação'; note: string; done: boolean }
@@ -54,6 +54,17 @@ function urgency(task: Task) {
   if (task.dueDate === today) return 1
   if (due.getTime() - now.getTime() <= 24 * 60 * 60 * 1000) return 2
   return 3
+}
+function mergeTasks(remote: Task[], local: Task[]): Task[] {
+  const byId = new Map(remote.map(task => [task.id, task]))
+  for (const task of local) {
+    const existing = byId.get(task.id)
+    if (!existing) byId.set(task.id, task)
+    else if (existing.deletedAt || task.deletedAt) {
+      byId.set(task.id, { ...existing, deletedAt: existing.deletedAt || task.deletedAt })
+    }
+  }
+  return [...byId.values()]
 }
 function sortTasks(tasks: Task[]) {
   const window = getTimeWindow()
@@ -106,8 +117,7 @@ export default function App() {
       if (!remoteHasData) {
         await saveRemote(syncCode, localData)
       } else {
-        const mergedTasks = [...remote.tasks]
-        for (const item of tasks) if (!mergedTasks.some(x => x.id === item.id)) mergedTasks.push(item)
+        const mergedTasks = mergeTasks(remote.tasks as Task[], tasks)
         const mergedHabits = [...remote.habits].map(h => {
           const local = habits.find(x => x.id === h.id)
           return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h
@@ -146,11 +156,7 @@ export default function App() {
     if (!syncCode || !syncReady) return
     const timer = window.setInterval(() => {
       loadRemote(syncCode).then(remote => {
-        setTasks(current => {
-          const merged = [...remote.tasks] as Task[]
-          for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item)
-          return merged
-        })
+        setTasks(current => mergeTasks(remote.tasks as Task[], current))
         setHabits(current => {
           const merged = [...remote.habits].map(h => {
             const local = current.find(x => x.id === h.id)
@@ -193,9 +199,10 @@ export default function App() {
   }, [running, focusMinutes])
   useEffect(() => { if (!running) setSecondsLeft(focusMinutes * 60) }, [focusMinutes, running])
 
-  const orderedTasks = useMemo(() => sortTasks(tasks.filter(t => !t.done)), [tasks])
+  const visibleTasks = tasks.filter(t => !t.deletedAt)
+  const orderedTasks = useMemo(() => sortTasks(tasks.filter(t => !t.done && !t.deletedAt)), [tasks])
   const todayTasks = orderedTasks.filter(t => t.dueDate === todayISO() || urgency(t) < 3)
-  const completedToday = tasks.filter(t => t.done).length
+  const completedToday = visibleTasks.filter(t => t.done).length
   const todayKey = todayISO()
   const doneHabits = habits.filter(h => h.completed.includes(todayKey)).length
   const historyStart = new Date()
@@ -210,6 +217,10 @@ export default function App() {
 
   function toggleTask(taskId: string) {
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, done: !t.done, completedAt: !t.done ? new Date().toISOString() : null } : t))
+  }
+  function deleteTask(task: Task) {
+    if (!window.confirm(`Excluir a tarefa "${task.title}"? Essa exclusão será sincronizada nos seus dispositivos.`)) return
+    setTasks(prev => prev.map(item => item.id === task.id ? { ...item, deletedAt: new Date().toISOString() } : item))
   }
   function addTask(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -258,7 +269,7 @@ export default function App() {
         </div>
         <div className="section-heading task-section-heading"><div><p className="eyebrow">PEQUENAS AÇÕES, GRANDES CAMINHOS</p><h2>O que vem primeiro</h2></div><button className="round-add" onClick={() => setShowTaskForm(true)} aria-label="Adicionar tarefa"><Plus size={19} /></button></div>
         <div className="task-list">
-          {todayTasks.length ? todayTasks.slice(0, 4).map((task, i) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} rank={i + 1} />) : <EmptyState title="Seu dia está aberto" text="Adicione uma tarefa quando quiser dar forma ao seu tempo." />}
+          {todayTasks.length ? todayTasks.slice(0, 4).map((task, i) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onDelete={() => deleteTask(task)} rank={i + 1} />) : <EmptyState title="Seu dia está aberto" text="Adicione uma tarefa quando quiser dar forma ao seu tempo." />}
         </div>
         <button className="gentle-prompt" onClick={() => setTab('Foco')}><span className="prompt-icon"><Coffee size={20} /></span><span><b>Um intervalo também é produtividade</b><small>Faça uma pausa curta ou comece um ciclo de foco.</small></span><ChevronRight size={18} /></button>
       </section>}
@@ -266,10 +277,10 @@ export default function App() {
       {tab === 'Tarefas' && <section className="page-view">
         <PageIntro eyebrow="UM PASSO DE CADA VEZ" title="Tarefas" text="Organize o que precisa ser feito sem transformar tudo em urgência." action={<button className="primary-button" onClick={() => setShowTaskForm(true)}><Plus size={17} /> Nova tarefa</button>} />
         <div className="filter-summary"><span><Sparkles size={16} /> Sugestão organizada por prazo, disponibilidade e prioridade</span><span>{orderedTasks.length} pendente{orderedTasks.length === 1 ? '' : 's'}</span></div>
-        <div className="task-list full-task-list">{orderedTasks.map((task, i) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} rank={i + 1} showDate />)}</div>
+        <div className="task-list full-task-list">{orderedTasks.map((task, i) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onDelete={() => deleteTask(task)} rank={i + 1} showDate />)}</div>
         <h3 className="minor-heading">Concluídas</h3>
-        <div className="task-list">{tasks.filter(t => t.done).map(task => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} />)}</div>
-        {!tasks.length && <EmptyState title="Comece pelo que importa" text="Crie sua primeira tarefa e organize o restante aos poucos." />}
+        <div className="task-list">{visibleTasks.filter(t => t.done).map(task => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onDelete={() => deleteTask(task)} />)}</div>
+        {!visibleTasks.length && <EmptyState title="Comece pelo que importa" text="Crie sua primeira tarefa e organize o restante aos poucos." />}
       </section>}
 
       {tab === 'Hábitos' && <section className="page-view">
@@ -317,10 +328,10 @@ export default function App() {
   </div>
 }
 
-function TaskRow({ task, onToggle, rank, showDate = false }: { task: Task; onToggle: () => void; rank?: number; showDate?: boolean }) {
+function TaskRow({ task, onToggle, onDelete, rank, showDate = false }: { task: Task; onToggle: () => void; onDelete?: () => void; rank?: number; showDate?: boolean }) {
   const late = !task.done && urgency(task) === 0
   const dueLabel = task.dueDate === todayISO() ? 'Hoje' : new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: 'short' }).format(new Date(`${task.dueDate}T12:00:00`))
-  return <article className={`task-row ${task.done ? 'task-complete' : ''}`}><button className="task-check" onClick={onToggle} aria-label={task.done ? 'Reabrir tarefa' : 'Concluir tarefa'}>{task.done ? <CheckCircle2 size={21} /> : <Circle size={21} />}</button><div className="task-main"><div className="task-title-line">{rank && !task.done && <span className="rank-chip">{rank}</span>}<b>{task.title}</b></div><div className="task-meta"><span>{task.category}</span><span className="meta-dot">·</span><span><Clock3 size={12} /> {task.duration} min</span>{showDate && <><span className="meta-dot">·</span><span className={late ? 'late-label' : ''}>{late ? 'Atrasada' : dueLabel} {task.dueTime ? `· ${task.dueTime}` : ''}</span></>}</div></div><span className={`priority-pill priority-${task.priority}`}>{task.priority === 'alta' ? 'Alta' : task.priority === 'media' ? 'Média' : 'Baixa'}</span></article>
+  return <article className={`task-row ${task.done ? 'task-complete' : ''}`}><button className="task-check" onClick={onToggle} aria-label={task.done ? 'Reabrir tarefa' : 'Concluir tarefa'}>{task.done ? <CheckCircle2 size={21} /> : <Circle size={21} />}</button><div className="task-main"><div className="task-title-line">{rank && !task.done && <span className="rank-chip">{rank}</span>}<b>{task.title}</b></div><div className="task-meta"><span>{task.category}</span><span className="meta-dot">·</span><span><Clock3 size={12} /> {task.duration} min</span>{showDate && <><span className="meta-dot">·</span><span className={late ? 'late-label' : ''}>{late ? 'Atrasada' : dueLabel} {task.dueTime ? `· ${task.dueTime}` : ''}</span></>}</div></div><span className={`priority-pill priority-${task.priority}`}>{task.priority === 'alta' ? 'Alta' : task.priority === 'media' ? 'Média' : 'Baixa'}</span>{onDelete && <button className="delete-button task-delete-button" onClick={onDelete} aria-label={`Excluir tarefa ${task.title}`} title="Excluir tarefa"><Trash2 size={16} /></button>}</article>
 }
 function PageIntro({ eyebrow, title, text, action }: { eyebrow: string; title: string; text: string; action?: React.ReactNode }) {
   return <div className="page-intro"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p className="subheading">{text}</p></div>{action}</div>
