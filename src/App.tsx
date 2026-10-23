@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { loadRemote, saveRemote, type FocusSession, type SyncData } from './supabaseSync'
+import type { Session } from '@supabase/supabase-js'
+import { supabase } from './supabase'
+import { loadRemote, saveRemote, claimLegacyData, type FocusSession, type SyncData } from './supabaseSync'
 import {
   AlarmClock, BookOpen, CalendarDays, Check, CheckCircle2, ChevronRight,
   Circle, Clock3, Coffee, Flame, Leaf, ListTodo, Pause, Play, Plus,
@@ -92,7 +94,15 @@ export default function App() {
   const [focusSessions, setFocusSessions] = useState<FocusSession[]>(saved.focusSessions || [])
   const [syncCode, setSyncCode] = useState(() => localStorage.getItem('meu-ritmo-sync-code') || '')
   const [syncReady, setSyncReady] = useState(false)
-  const [syncStatus, setSyncStatus] = useState('Somente neste dispositivo')
+  const [syncStatus, setSyncStatus] = useState('Conectando à sua conta…')
+  const [session, setSession] = useState<Session | null>(null)
+  const [authReady, setAuthReady] = useState(false)
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authError, setAuthError] = useState('')
+  const [authMessage, setAuthMessage] = useState('')
   const [historyPeriod, setHistoryPeriod] = useState<'week' | 'month'>('week')
   const [availableMinutes, setAvailableMinutes] = useState(25)
   const [secondsLeft, setSecondsLeft] = useState((saved.focusMinutes || 25) * 60)
@@ -106,90 +116,71 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('meu-ritmo-v1', JSON.stringify({ tasks, habits, library, activeTab: tab, focusMinutes, focusSessions }))
   }, [tasks, habits, library, tab, focusMinutes, focusSessions])
+
   useEffect(() => {
-    if (!syncCode) { setSyncReady(false); setSyncStatus('Somente neste dispositivo'); return }
+    let alive = true
+    supabase.auth.getSession().then(({ data }) => { if (alive) { setSession(data.session); setAuthReady(true) } }).catch(() => { if (alive) setAuthReady(true) })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => { setSession(nextSession); setAuthReady(true); if (!nextSession) { setSyncReady(false); setSyncStatus('Entre para acessar seus dados') } })
+    return () => { alive = false; subscription.unsubscribe() }
+  }, [])
+  useEffect(() => {
+    const token = session?.access_token
+    if (!token) { setSyncReady(false); return }
     let cancelled = false
-    setSyncReady(false)
-    setSyncStatus('Conectando à nuvem…')
-    loadRemote(syncCode).then(async remote => {
-      if (cancelled) return
-      const localData = { tasks, habits, library, focusSessions } as SyncData
-      const remoteHasData = remote.tasks.length + remote.habits.length + remote.library.length + remote.focusSessions.length > 0
-      if (!remoteHasData) {
-        await saveRemote(syncCode, localData)
-      } else {
-        const mergedTasks = mergeTasks(remote.tasks as Task[], tasks)
-        const mergedHabits = [...remote.habits].map(h => {
-          const local = habits.find(x => x.id === h.id)
-          return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h
-        })
-        for (const item of habits) if (!mergedHabits.some(x => x.id === item.id)) mergedHabits.push(item)
-        const mergedLibrary = [...remote.library]
-        for (const item of library) if (!mergedLibrary.some(x => x.id === item.id)) mergedLibrary.push(item)
-        const mergedFocus = [...remote.focusSessions]
-        for (const item of focusSessions) if (!mergedFocus.some(x => x.id === item.id)) mergedFocus.push(item)
-        setTasks(mergedTasks as Task[])
-        setHabits(mergedHabits as Habit[])
-        setLibrary(mergedLibrary as LibraryItem[])
-        setFocusSessions(mergedFocus)
-        await saveRemote(syncCode, { tasks: mergedTasks, habits: mergedHabits, library: mergedLibrary, focusSessions: mergedFocus } as SyncData)
-      }
-      if (!cancelled) { setSyncReady(true); setSyncStatus('Sincronizado com a nuvem') }
-    }).catch(() => {
-      if (!cancelled) setSyncStatus('Falha ao conectar — dados locais preservados')
-    })
+    setSyncReady(false); setSyncStatus('Carregando seu histórico…')
+    ;(async () => {
+      try {
+        if (syncCode) { await claimLegacyData(token, syncCode); localStorage.removeItem('meu-ritmo-sync-code'); setSyncCode('') }
+        const remote = await loadRemote(token)
+        if (cancelled) return
+        const localData = { tasks, habits, library, focusSessions } as SyncData
+        const hasRemote = remote.tasks.length + remote.habits.length + remote.library.length + remote.focusSessions.length > 0
+        if (!hasRemote) await saveRemote(token, localData)
+        else {
+          const mergedTasks = mergeTasks(remote.tasks as Task[], tasks)
+          const mergedHabits = [...remote.habits].map(h => { const local = habits.find(x => x.id === h.id); return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h })
+          for (const item of habits) if (!mergedHabits.some(x => x.id === item.id)) mergedHabits.push(item)
+          const mergedLibrary = [...remote.library]; for (const item of library) if (!mergedLibrary.some(x => x.id === item.id)) mergedLibrary.push(item)
+          const mergedFocus = [...remote.focusSessions]; for (const item of focusSessions) if (!mergedFocus.some(x => x.id === item.id)) mergedFocus.push(item)
+          setTasks(mergedTasks as Task[]); setHabits(mergedHabits as Habit[]); setLibrary(mergedLibrary as LibraryItem[]); setFocusSessions(mergedFocus)
+          await saveRemote(token, { tasks: mergedTasks, habits: mergedHabits, library: mergedLibrary, focusSessions: mergedFocus } as SyncData)
+        }
+        if (!cancelled) { setSyncReady(true); setSyncStatus('Histórico sincronizado com sua conta') }
+      } catch (error) { if (!cancelled) setSyncStatus(error instanceof Error ? error.message : 'Falha ao carregar seus dados') }
+    })()
     return () => { cancelled = true }
-  // Initial local state is intentionally captured for safe first-time migration.
+  // Capture browser history once so it can be merged into the signed-in account.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncCode])
+  }, [session?.access_token])
 
   useEffect(() => {
-    if (!syncCode || !syncReady) return
-    const timer = window.setTimeout(() => {
-      saveRemote(syncCode, { tasks, habits, library, focusSessions } as SyncData)
-        .then(() => setSyncStatus('Sincronizado com a nuvem'))
-        .catch(() => setSyncStatus('Sem conexão — alterações locais preservadas'))
-    }, 700)
+    const token = session?.access_token; if (!token || !syncReady) return
+    const timer = window.setTimeout(() => { saveRemote(token, { tasks, habits, library, focusSessions } as SyncData).then(() => setSyncStatus('Histórico sincronizado com sua conta')).catch(() => setSyncStatus('Sem conexão — alterações locais preservadas')) }, 700)
     return () => window.clearTimeout(timer)
-  }, [syncCode, syncReady, tasks, habits, library, focusSessions])
+  }, [session?.access_token, syncReady, tasks, habits, library, focusSessions])
 
   useEffect(() => {
-    if (!syncCode || !syncReady) return
+    const token = session?.access_token; if (!token || !syncReady) return
     const timer = window.setInterval(() => {
-      loadRemote(syncCode).then(remote => {
+      loadRemote(token).then(remote => {
         setTasks(current => mergeTasks(remote.tasks as Task[], current))
-        setHabits(current => {
-          const merged = [...remote.habits].map(h => {
-            const local = current.find(x => x.id === h.id)
-            return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h
-          }) as Habit[]
-          for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item)
-          return merged
-        })
-        setLibrary(current => {
-          const merged = [...remote.library] as LibraryItem[]
-          for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item)
-          return merged
-        })
-        setFocusSessions(current => {
-          const merged = [...remote.focusSessions]
-          for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item)
-          return merged
-        })
-        setSyncStatus('Sincronizado com a nuvem')
+        setHabits(current => { const merged = [...remote.habits].map(h => { const local = current.find(x => x.id === h.id); return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h }) as Habit[]; for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item); return merged })
+        setLibrary(current => { const merged = [...remote.library] as LibraryItem[]; for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item); return merged })
+        setFocusSessions(current => { const merged = [...remote.focusSessions]; for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item); return merged })
+        setSyncStatus('Histórico sincronizado com sua conta')
       }).catch(() => setSyncStatus('Sem conexão — tentando novamente'))
     }, 8000)
     return () => window.clearInterval(timer)
-  }, [syncCode, syncReady])
+  }, [session?.access_token, syncReady])
 
-  function connectDevices() {
-    const code = window.prompt('Crie um código de sincronização com pelo menos 12 caracteres. Use exatamente o mesmo código no celular e no computador. Quem tiver esse código poderá acessar os dados sincronizados.')
-    if (!code) return
-    if (code.trim().length < 12) { window.alert('O código precisa ter pelo menos 12 caracteres.'); return }
-    localStorage.setItem('meu-ritmo-sync-code', code.trim())
-    setSyncCode(code.trim())
+  async function submitAuth(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault(); setAuthBusy(true); setAuthError(''); setAuthMessage('')
+    try {
+      if (authMode === 'signup') { const { data, error } = await supabase.auth.signUp({ email: authEmail.trim(), password: authPassword }); if (error) throw error; if (!data.session) setAuthMessage('Cadastro iniciado. Confira seu e-mail para confirmar a conta e depois entre.') }
+      else { const { error } = await supabase.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword }); if (error) throw error }
+    } catch (error) { setAuthError(error instanceof Error ? error.message : 'Não foi possível autenticar.') } finally { setAuthBusy(false) }
   }
-
+  async function signOut() { await supabase.auth.signOut(); setTab('Hoje'); setSyncReady(false) }
   useEffect(() => {
     if (!running) return
     const timer = window.setInterval(() => setSecondsLeft(s => {
@@ -247,12 +238,15 @@ export default function App() {
     { name: 'Hábitos', icon: Leaf }, { name: 'Foco', icon: TimerReset }, { name: 'Biblioteca', icon: BookOpen },
   ]
 
+  if (!authReady) return <main className="auth-shell"><section className="auth-card"><span className="brand-mark"><Waves size={20} /></span><h1>Meu Ritmo</h1><p>Verificando sua sessão segura…</p></section></main>
+  if (!session) return <main className="auth-shell"><section className="auth-card"><span className="brand-mark"><Waves size={20} /></span><p className="eyebrow">SEU ESPAÇO PESSOAL</p><h1>meu <b>ritmo</b></h1><p className="auth-subtitle">Entre para acessar suas tarefas, hábitos, foco e biblioteca.</p><form className="auth-form" onSubmit={submitAuth}><label>E-mail<input type="email" autoComplete="email" required value={authEmail} onChange={e => setAuthEmail(e.target.value)} placeholder="voce@exemplo.com" /></label><label>Senha<input type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} minLength={6} required value={authPassword} onChange={e => setAuthPassword(e.target.value)} placeholder="Mínimo de 6 caracteres" /></label>{authError && <p className="auth-error" role="alert">{authError}</p>}{authMessage && <p className="auth-message" role="status">{authMessage}</p>}<button className="primary-button auth-submit" type="submit" disabled={authBusy}>{authBusy ? "Aguarde…" : authMode === "login" ? "Entrar" : "Criar conta"}</button></form><p className="auth-switch">{authMode === "login" ? "Ainda não tem conta?" : "Já tem uma conta?"} <button type="button" onClick={() => { setAuthMode(authMode === "login" ? "signup" : "login"); setAuthError(""); setAuthMessage("") }}>{authMode === "login" ? "Criar conta" : "Entrar"}</button></p><p className="auth-privacy">Suas informações ficam vinculadas à sua conta.</p></section></main>
+
   return <div className="app-shell">
     <header className="topbar">
       <a className="brand" href="#inicio" onClick={e => { e.preventDefault(); setTab('Hoje') }} aria-label="Meu Ritmo, início">
         <span className="brand-mark"><Waves size={20} /></span><span>meu <b>ritmo</b></span>
       </a>
-      <div className="topbar-right"><span className="soft-status"><span className="status-dot" /> {syncStatus}</span><button className="secondary-button" onClick={connectDevices}>{syncCode ? 'Configurar sincronização' : 'Sincronizar dispositivos'}</button><button className="avatar" aria-label="Perfil">J</button></div>
+      <div className="topbar-right"><span className="soft-status"><span className="status-dot" /> {syncStatus}</span><button className="secondary-button" onClick={signOut}>Sair</button><button className="avatar" aria-label="Perfil">{session.user.email?.slice(0,1).toUpperCase() || "U"}</button></div>
     </header>
     <main className="main-content">
       {tab === 'Hoje' && <section className="today-view">
