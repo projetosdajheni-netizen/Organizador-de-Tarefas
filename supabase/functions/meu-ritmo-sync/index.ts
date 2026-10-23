@@ -43,23 +43,18 @@ Deno.serve(async (req: Request) => {
       if (!legacySpace) return json({ error: "O código antigo não corresponde a um histórico sincronizado. Seus dados locais continuam preservados." }, 404);
       if (legacySpace.owner_id && legacySpace.owner_id !== userId) return json({ error: "Esse histórico já está vinculado a outra conta." }, 409);
 
-      const tables = ["tasks", "habits", "habit_completions", "focus_sessions", "library_items"];
-      for (const table of tables) {
-        const { data: owned, error: ownedError } = await db.from(table).select("owner_id").eq("space_id", legacySpace.id).not("owner_id", "is", null).limit(1);
-        if (ownedError) throw ownedError;
-        if (owned?.some((row: { owner_id: string }) => row.owner_id !== userId)) {
-          return json({ error: "Parte desse histórico já pertence a outra conta; migração interrompida por segurança." }, 409);
+      const { data: claimResult, error: claimError } = await db.rpc("claim_meu_ritmo_legacy_space", {
+        p_space_id: legacySpace.id,
+        p_user_id: userId,
+      });
+      if (claimError) {
+        const message = claimError.message || "";
+        if (message.includes("owned_by_another_user") || message.includes("rows_owned_by_another_user")) {
+          return json({ error: "Esse histórico ou parte dele já está vinculado a outra conta. Nenhum registro foi transferido." }, 409);
         }
+        throw claimError;
       }
-      const { error: spaceError } = await db.from("sync_spaces").update({ owner_id: userId, last_seen_at: new Date().toISOString() }).eq("id", legacySpace.id).or("owner_id.is.null,owner_id.eq." + userId);
-      if (spaceError) throw spaceError;
-      const migrated: Record<string, number> = {};
-      for (const table of tables) {
-        const { data, error: updateError } = await db.from(table).update({ owner_id: userId }).eq("space_id", legacySpace.id).is("owner_id", null).select("space_id");
-        if (updateError) throw updateError;
-        migrated[table] = data?.length || 0;
-      }
-      return json({ ok: true, migrated });
+      return json(claimResult);
     }
 
     let { data: space, error: spaceError } = await db.from("sync_spaces").select("id").eq("owner_id", userId).maybeSingle();
