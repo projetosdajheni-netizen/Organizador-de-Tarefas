@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { loadRemote, saveRemote, type FocusSession, type SyncData } from './supabaseSync'
 import {
   AlarmClock, BookOpen, CalendarDays, Check, CheckCircle2, ChevronRight,
   Circle, Clock3, Coffee, Flame, Leaf, ListTodo, Pause, Play, Plus,
@@ -9,11 +10,11 @@ type Tab = 'Hoje' | 'Tarefas' | 'Hábitos' | 'Foco' | 'Biblioteca'
 type Task = {
   id: string; title: string; dueDate: string; dueTime: string; duration: number
   priority: 'alta' | 'media' | 'baixa'; availability: 'qualquer' | 'manha' | 'tarde' | 'noite'
-  done: boolean; createdAt: number; category: string
+  done: boolean; createdAt: number; category: string; completedAt?: string | null; deletedAt?: string | null
 }
-type Habit = { id: string; title: string; note: string; completed: string[] }
+type Habit = { id: string; title: string; note: string; completed: string[]; periodicity?: 'daily' | 'weekly' | 'weekdays' | 'custom' }
 type LibraryItem = { id: string; title: string; kind: 'Leitura' | 'Curso' | 'Anotação'; note: string; done: boolean }
-type Persisted = { tasks: Task[]; habits: Habit[]; library: LibraryItem[]; activeTab: Tab; focusMinutes: number }
+type Persisted = { tasks: Task[]; habits: Habit[]; library: LibraryItem[]; activeTab: Tab; focusMinutes: number; focusSessions?: FocusSession[] }
 
 const todayISO = () => {
   const d = new Date()
@@ -54,6 +55,17 @@ function urgency(task: Task) {
   if (due.getTime() - now.getTime() <= 24 * 60 * 60 * 1000) return 2
   return 3
 }
+function mergeTasks(remote: Task[], local: Task[]): Task[] {
+  const byId = new Map(remote.map(task => [task.id, task]))
+  for (const task of local) {
+    const existing = byId.get(task.id)
+    if (!existing) byId.set(task.id, task)
+    else if (existing.deletedAt || task.deletedAt) {
+      byId.set(task.id, { ...existing, deletedAt: existing.deletedAt || task.deletedAt })
+    }
+  }
+  return [...byId.values()]
+}
 function sortTasks(tasks: Task[]) {
   const window = getTimeWindow()
   return [...tasks].sort((a, b) => {
@@ -77,6 +89,12 @@ export default function App() {
   const [habits, setHabits] = useState<Habit[]>(saved.habits || starterHabits)
   const [library, setLibrary] = useState<LibraryItem[]>(saved.library || starterLibrary)
   const [focusMinutes, setFocusMinutes] = useState(saved.focusMinutes || 25)
+  const [focusSessions, setFocusSessions] = useState<FocusSession[]>(saved.focusSessions || [])
+  const [syncCode, setSyncCode] = useState(() => localStorage.getItem('meu-ritmo-sync-code') || '')
+  const [syncReady, setSyncReady] = useState(false)
+  const [syncStatus, setSyncStatus] = useState('Somente neste dispositivo')
+  const [historyPeriod, setHistoryPeriod] = useState<'week' | 'month'>('week')
+  const [availableMinutes, setAvailableMinutes] = useState(25)
   const [secondsLeft, setSecondsLeft] = useState((saved.focusMinutes || 25) * 60)
   const [running, setRunning] = useState(false)
   const [showTaskForm, setShowTaskForm] = useState(false)
@@ -86,27 +104,126 @@ export default function App() {
   const [note, setNote] = useState('')
 
   useEffect(() => {
-    localStorage.setItem('meu-ritmo-v1', JSON.stringify({ tasks, habits, library, activeTab: tab, focusMinutes }))
-  }, [tasks, habits, library, tab, focusMinutes])
+    localStorage.setItem('meu-ritmo-v1', JSON.stringify({ tasks, habits, library, activeTab: tab, focusMinutes, focusSessions }))
+  }, [tasks, habits, library, tab, focusMinutes, focusSessions])
+  useEffect(() => {
+    if (!syncCode) { setSyncReady(false); setSyncStatus('Somente neste dispositivo'); return }
+    let cancelled = false
+    setSyncReady(false)
+    setSyncStatus('Conectando à nuvem…')
+    loadRemote(syncCode).then(async remote => {
+      if (cancelled) return
+      const localData = { tasks, habits, library, focusSessions } as SyncData
+      const remoteHasData = remote.tasks.length + remote.habits.length + remote.library.length + remote.focusSessions.length > 0
+      if (!remoteHasData) {
+        await saveRemote(syncCode, localData)
+      } else {
+        const mergedTasks = mergeTasks(remote.tasks as Task[], tasks)
+        const mergedHabits = [...remote.habits].map(h => {
+          const local = habits.find(x => x.id === h.id)
+          return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h
+        })
+        for (const item of habits) if (!mergedHabits.some(x => x.id === item.id)) mergedHabits.push(item)
+        const mergedLibrary = [...remote.library]
+        for (const item of library) if (!mergedLibrary.some(x => x.id === item.id)) mergedLibrary.push(item)
+        const mergedFocus = [...remote.focusSessions]
+        for (const item of focusSessions) if (!mergedFocus.some(x => x.id === item.id)) mergedFocus.push(item)
+        setTasks(mergedTasks as Task[])
+        setHabits(mergedHabits as Habit[])
+        setLibrary(mergedLibrary as LibraryItem[])
+        setFocusSessions(mergedFocus)
+        await saveRemote(syncCode, { tasks: mergedTasks, habits: mergedHabits, library: mergedLibrary, focusSessions: mergedFocus } as SyncData)
+      }
+      if (!cancelled) { setSyncReady(true); setSyncStatus('Sincronizado com a nuvem') }
+    }).catch(() => {
+      if (!cancelled) setSyncStatus('Falha ao conectar — dados locais preservados')
+    })
+    return () => { cancelled = true }
+  // Initial local state is intentionally captured for safe first-time migration.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncCode])
+
+  useEffect(() => {
+    if (!syncCode || !syncReady) return
+    const timer = window.setTimeout(() => {
+      saveRemote(syncCode, { tasks, habits, library, focusSessions } as SyncData)
+        .then(() => setSyncStatus('Sincronizado com a nuvem'))
+        .catch(() => setSyncStatus('Sem conexão — alterações locais preservadas'))
+    }, 700)
+    return () => window.clearTimeout(timer)
+  }, [syncCode, syncReady, tasks, habits, library, focusSessions])
+
+  useEffect(() => {
+    if (!syncCode || !syncReady) return
+    const timer = window.setInterval(() => {
+      loadRemote(syncCode).then(remote => {
+        setTasks(current => mergeTasks(remote.tasks as Task[], current))
+        setHabits(current => {
+          const merged = [...remote.habits].map(h => {
+            const local = current.find(x => x.id === h.id)
+            return local ? { ...h, completed: [...new Set([...h.completed, ...local.completed])] } : h
+          }) as Habit[]
+          for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item)
+          return merged
+        })
+        setLibrary(current => {
+          const merged = [...remote.library] as LibraryItem[]
+          for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item)
+          return merged
+        })
+        setFocusSessions(current => {
+          const merged = [...remote.focusSessions]
+          for (const item of current) if (!merged.some(x => x.id === item.id)) merged.push(item)
+          return merged
+        })
+        setSyncStatus('Sincronizado com a nuvem')
+      }).catch(() => setSyncStatus('Sem conexão — tentando novamente'))
+    }, 8000)
+    return () => window.clearInterval(timer)
+  }, [syncCode, syncReady])
+
+  function connectDevices() {
+    const code = window.prompt('Crie um código de sincronização com pelo menos 12 caracteres. Use exatamente o mesmo código no celular e no computador. Quem tiver esse código poderá acessar os dados sincronizados.')
+    if (!code) return
+    if (code.trim().length < 12) { window.alert('O código precisa ter pelo menos 12 caracteres.'); return }
+    localStorage.setItem('meu-ritmo-sync-code', code.trim())
+    setSyncCode(code.trim())
+  }
+
   useEffect(() => {
     if (!running) return
     const timer = window.setInterval(() => setSecondsLeft(s => {
-      if (s <= 1) { window.clearInterval(timer); setRunning(false); return 0 }
+      if (s <= 1) { window.clearInterval(timer); setRunning(false); setFocusSessions(prev => [...prev, { id: crypto.randomUUID(), started_at: new Date(Date.now() - focusMinutes * 60000).toISOString(), ended_at: new Date().toISOString(), duration_minutes: focusMinutes, completed: true }]); return 0 }
       return s - 1
     }), 1000)
     return () => window.clearInterval(timer)
-  }, [running])
+  }, [running, focusMinutes])
   useEffect(() => { if (!running) setSecondsLeft(focusMinutes * 60) }, [focusMinutes, running])
 
-  const orderedTasks = useMemo(() => sortTasks(tasks.filter(t => !t.done)), [tasks])
+  const visibleTasks = tasks.filter(t => !t.deletedAt)
+  const orderedTasks = useMemo(() => sortTasks(tasks.filter(t => !t.done && !t.deletedAt)), [tasks])
   const todayTasks = orderedTasks.filter(t => t.dueDate === todayISO() || urgency(t) < 3)
-  const completedToday = tasks.filter(t => t.done).length
+  const isSelfCareDay = new Date().getDay() === 0
+  const suggestedTask = isSelfCareDay ? undefined : orderedTasks.find(task => task.duration <= availableMinutes)
+  const completedToday = visibleTasks.filter(t => t.done).length
   const todayKey = todayISO()
   const doneHabits = habits.filter(h => h.completed.includes(todayKey)).length
+  const historyStart = new Date()
+  if (historyPeriod === 'month') historyStart.setDate(1)
+  else historyStart.setDate(historyStart.getDate() - 6)
+  historyStart.setHours(0, 0, 0, 0)
+  const historyStartKey = `${historyStart.getFullYear()}-${String(historyStart.getMonth() + 1).padStart(2, '0')}-${String(historyStart.getDate()).padStart(2, '0')}`
+  const habitCompletionsInPeriod = habits.reduce((sum, h) => sum + h.completed.filter(day => day >= historyStartKey && day <= todayKey).length, 0)
+  const tasksCompletedInPeriod = tasks.filter(t => t.done && t.completedAt && new Date(t.completedAt) >= historyStart).length
+  const focusMinutesInPeriod = focusSessions.filter(s => new Date(s.started_at) >= historyStart).reduce((sum, s) => sum + s.duration_minutes, 0)
   const greeting = new Date().getHours() < 12 ? 'Bom dia' : new Date().getHours() < 18 ? 'Boa tarde' : 'Boa noite'
 
   function toggleTask(taskId: string) {
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, done: !t.done } : t))
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, done: !t.done, completedAt: !t.done ? new Date().toISOString() : null } : t))
+  }
+  function deleteTask(task: Task) {
+    if (!window.confirm(`Excluir a tarefa "${task.title}"? Essa exclusão será sincronizada nos seus dispositivos.`)) return
+    setTasks(prev => prev.map(item => item.id === task.id ? { ...item, deletedAt: new Date().toISOString() } : item))
   }
   function addTask(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -135,7 +252,7 @@ export default function App() {
       <a className="brand" href="#inicio" onClick={e => { e.preventDefault(); setTab('Hoje') }} aria-label="Meu Ritmo, início">
         <span className="brand-mark"><Waves size={20} /></span><span>meu <b>ritmo</b></span>
       </a>
-      <div className="topbar-right"><span className="soft-status"><span className="status-dot" /> Seu espaço, no seu ritmo</span><button className="avatar" aria-label="Perfil">J</button></div>
+      <div className="topbar-right"><span className="soft-status"><span className="status-dot" /> {syncStatus}</span><button className="secondary-button" onClick={connectDevices}>{syncCode ? 'Configurar sincronização' : 'Sincronizar dispositivos'}</button><button className="avatar" aria-label="Perfil">J</button></div>
     </header>
     <main className="main-content">
       {tab === 'Hoje' && <section className="today-view">
@@ -153,9 +270,17 @@ export default function App() {
           <article className="stat-card stat-sand"><span className="stat-icon"><Leaf size={19} /></span><span className="stat-label">Hábitos de hoje</span><strong>{doneHabits}<small> de {habits.length}</small></strong><div className="progress-track"><span style={{ width: habits.length ? `${doneHabits / habits.length * 100}%` : '0%' }} /></div></article>
           <article className="stat-card stat-blue"><span className="stat-icon"><Clock3 size={19} /></span><span className="stat-label">Próximo passo</span><strong className="next-step">{todayTasks[0] ? todayTasks[0].title : 'Pausa merecida'}</strong><span className="tiny-note">{todayTasks[0] ? `${todayTasks[0].duration} min · ${todayTasks[0].category}` : 'Você pode respirar.'}</span></article>
         </div>
+        <section className="planning-card">
+          <div className="planning-heading"><span className="planning-icon"><Sparkles size={18} /></span><div><p className="eyebrow">PLANEJAMENTO FLEXÍVEL</p><h2>O que cabe no seu tempo?</h2></div></div>
+          {isSelfCareDay ? <div className="planning-rest"><Coffee size={21} /><div><b>Domingo protegido: seu dia de autocuidado</b><p>Hoje, a sugestão é descansar. Nenhuma tarefa será remarcada ou alterada automaticamente.</p></div></div> : <>
+            <p className="planning-description">Escolha quanto tempo você tem livre. Vou sugerir uma tarefa que caiba nesse intervalo, sem alterar sua agenda.</p>
+            <div className="time-options" role="group" aria-label="Tempo livre disponível">{[15, 25, 45, 60].map(minutes => <button key={minutes} className={availableMinutes === minutes ? 'time-option active' : 'time-option'} onClick={() => setAvailableMinutes(minutes)}>{minutes} min</button>)}</div>
+            <div className="planning-recommendation">{suggestedTask ? <><span className="recommendation-label">SUGESTÃO PARA AGORA</span><b>{suggestedTask.title}</b><span>{suggestedTask.duration} min · {suggestedTask.category} · prioridade {suggestedTask.priority === 'alta' ? 'alta' : suggestedTask.priority === 'media' ? 'média' : 'baixa'}</span><button className="text-button" onClick={() => setTab('Tarefas')}>Ver tarefa <ChevronRight size={15} /></button></> : <><b>Nenhuma tarefa cadastrada cabe nesse intervalo.</b><span>Você pode aumentar o tempo disponível ou cadastrar uma atividade curta de estudo, leitura ou bem-estar.</span><button className="text-button" onClick={() => setShowTaskForm(true)}>Adicionar tarefa <Plus size={15} /></button></>}</div>
+          </>}
+        </section>
         <div className="section-heading task-section-heading"><div><p className="eyebrow">PEQUENAS AÇÕES, GRANDES CAMINHOS</p><h2>O que vem primeiro</h2></div><button className="round-add" onClick={() => setShowTaskForm(true)} aria-label="Adicionar tarefa"><Plus size={19} /></button></div>
         <div className="task-list">
-          {todayTasks.length ? todayTasks.slice(0, 4).map((task, i) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} rank={i + 1} />) : <EmptyState title="Seu dia está aberto" text="Adicione uma tarefa quando quiser dar forma ao seu tempo." />}
+          {todayTasks.length ? todayTasks.slice(0, 4).map((task, i) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onDelete={() => deleteTask(task)} rank={i + 1} />) : <EmptyState title="Seu dia está aberto" text="Adicione uma tarefa quando quiser dar forma ao seu tempo." />}
         </div>
         <button className="gentle-prompt" onClick={() => setTab('Foco')}><span className="prompt-icon"><Coffee size={20} /></span><span><b>Um intervalo também é produtividade</b><small>Faça uma pausa curta ou comece um ciclo de foco.</small></span><ChevronRight size={18} /></button>
       </section>}
@@ -163,16 +288,27 @@ export default function App() {
       {tab === 'Tarefas' && <section className="page-view">
         <PageIntro eyebrow="UM PASSO DE CADA VEZ" title="Tarefas" text="Organize o que precisa ser feito sem transformar tudo em urgência." action={<button className="primary-button" onClick={() => setShowTaskForm(true)}><Plus size={17} /> Nova tarefa</button>} />
         <div className="filter-summary"><span><Sparkles size={16} /> Sugestão organizada por prazo, disponibilidade e prioridade</span><span>{orderedTasks.length} pendente{orderedTasks.length === 1 ? '' : 's'}</span></div>
-        <div className="task-list full-task-list">{orderedTasks.map((task, i) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} rank={i + 1} showDate />)}</div>
+        <div className="task-list full-task-list">{orderedTasks.map((task, i) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onDelete={() => deleteTask(task)} rank={i + 1} showDate />)}</div>
         <h3 className="minor-heading">Concluídas</h3>
-        <div className="task-list">{tasks.filter(t => t.done).map(task => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} />)}</div>
-        {!tasks.length && <EmptyState title="Comece pelo que importa" text="Crie sua primeira tarefa e organize o restante aos poucos." />}
+        <div className="task-list">{visibleTasks.filter(t => t.done).map(task => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onDelete={() => deleteTask(task)} />)}</div>
+        {!visibleTasks.length && <EmptyState title="Comece pelo que importa" text="Crie sua primeira tarefa e organize o restante aos poucos." />}
       </section>}
 
       {tab === 'Hábitos' && <section className="page-view">
         <PageIntro eyebrow="CONSTÂNCIA SEM PERFECCIONISMO" title="Hábitos" text="Pequenas práticas que ajudam a cuidar de você. Marque o que conseguiu fazer hoje." />
         <div className="habit-summary"><div className="habit-sun"><Flame size={24} /></div><div><strong>{doneHabits} de {habits.length} hábitos</strong><p>O progresso não precisa ser perfeito para ser real.</p></div><span className="habit-percent">{habits.length ? Math.round(doneHabits / habits.length * 100) : 0}%</span></div>
-        <div className="habit-list">{habits.map(h => { const done = h.completed.includes(todayKey); return <button className={`habit-card ${done ? 'habit-done' : ''}`} key={h.id} onClick={() => toggleHabit(h.id)}><span className="habit-check">{done ? <Check size={19} /> : <Circle size={20} />}</span><span className="habit-copy"><b>{h.title}</b><small>{h.note}</small></span><span className="habit-streak">{h.completed.length} dia{h.completed.length === 1 ? '' : 's'}</span></button> })}</div>
+        <div className="habit-list">{habits.map(h => { const done = h.completed.includes(todayKey); return <button className={`habit-card ${done ? 'habit-done' : ''}`} key={h.id} onClick={() => toggleHabit(h.id)}><span className="habit-check">{done ? <Check size={19} /> : <Circle size={20} />}</span><span className="habit-copy"><b>{h.title}</b><small>{h.note} · {h.periodicity === 'weekly' ? 'Semanal' : h.periodicity === 'weekdays' ? 'Dias úteis' : h.periodicity === 'custom' ? 'Personalizada' : 'Diário'}</small></span><span className="habit-streak">{h.completed.length} dia{h.completed.length === 1 ? '' : 's'}</span></button> })}</div>
+        <section className="history-panel">
+          <div className="section-heading"><div><p className="eyebrow">SEU PROGRESSO REAL</p><h2>Histórico</h2></div>
+            <div className="history-switch"><button className={historyPeriod === 'week' ? 'primary-button' : 'secondary-button'} onClick={() => setHistoryPeriod('week')}>7 dias</button><button className={historyPeriod === 'month' ? 'primary-button' : 'secondary-button'} onClick={() => setHistoryPeriod('month')}>Este mês</button></div>
+          </div>
+          <p className="subheading">Contagem baseada nos registros salvos, sem estimar dias que não foram marcados.</p>
+          <div className="stat-grid">
+            <article className="stat-card stat-green"><span className="stat-label">Cumprimentos de hábitos</span><strong>{habitCompletionsInPeriod}</strong></article>
+            <article className="stat-card stat-sand"><span className="stat-label">Tarefas concluídas com data</span><strong>{tasksCompletedInPeriod}</strong></article>
+            <article className="stat-card stat-blue"><span className="stat-label">Minutos de foco registrados</span><strong>{focusMinutesInPeriod}</strong></article>
+          </div>
+        </section>
         <div className="gentle-note"><Leaf size={20} /><p><b>Lembrete gentil</b><br />O hábito de se movimentar pode ser pulado quando o dia estiver cheio — sem virar uma dívida para amanhã.</p></div>
       </section>}
 
@@ -199,14 +335,14 @@ export default function App() {
 
     {showTaskForm && <div className="modal-backdrop" onClick={() => setShowTaskForm(false)}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="task-modal-title" onClick={e => e.stopPropagation()}><div className="modal-head"><div><p className="eyebrow">NOVO PASSO</p><h2 id="task-modal-title">Adicionar tarefa</h2></div><button className="icon-button" onClick={() => setShowTaskForm(false)} aria-label="Fechar"><X size={20} /></button></div><form onSubmit={addTask} className="form-grid"><label className="wide-field">O que precisa ser feito?<input autoFocus required value={newTask.title} onChange={e => setNewTask({ ...newTask, title: e.target.value })} placeholder="Ex.: revisar uma aula de AWS" /></label><label>Prazo<input type="date" value={newTask.dueDate} onChange={e => setNewTask({ ...newTask, dueDate: e.target.value })} /></label><label>Horário<input type="time" value={newTask.dueTime} onChange={e => setNewTask({ ...newTask, dueTime: e.target.value })} /></label><label>Duração (min)<input type="number" min="5" step="5" value={newTask.duration} onChange={e => setNewTask({ ...newTask, duration: e.target.value })} /></label><label>Categoria<select value={newTask.category} onChange={e => setNewTask({ ...newTask, category: e.target.value })}><option>Pessoal</option><option>Estudos</option><option>Trabalho</option><option>Bem-estar</option><option>Família</option><option>Leitura</option></select></label><label>Prioridade<select value={newTask.priority} onChange={e => setNewTask({ ...newTask, priority: e.target.value as Task['priority'] })}><option value="alta">Alta</option><option value="media">Média</option><option value="baixa">Baixa</option></select></label><label>Disponibilidade<select value={newTask.availability} onChange={e => setNewTask({ ...newTask, availability: e.target.value as Task['availability'] })}><option value="qualquer">Qualquer horário</option><option value="manha">Manhã</option><option value="tarde">Tarde</option><option value="noite">Noite</option></select></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShowTaskForm(false)}>Cancelar</button><button className="primary-button" type="submit"><Plus size={17} /> Salvar tarefa</button></div></form></section></div>}
     {showLibraryForm && <div className="modal-backdrop" onClick={() => setShowLibraryForm(false)}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="library-modal-title" onClick={e => e.stopPropagation()}><div className="modal-head"><div><p className="eyebrow">GUARDE PARA DEPOIS</p><h2 id="library-modal-title">Novo item</h2></div><button className="icon-button" onClick={() => setShowLibraryForm(false)} aria-label="Fechar"><X size={20} /></button></div><form onSubmit={addLibraryItem} className="form-grid"><label className="wide-field">Título<input autoFocus required value={newLibrary.title} onChange={e => setNewLibrary({ ...newLibrary, title: e.target.value })} placeholder="Nome do curso, livro ou ideia" /></label><label className="wide-field">Tipo<select value={newLibrary.kind} onChange={e => setNewLibrary({ ...newLibrary, kind: e.target.value as LibraryItem['kind'] })}><option>Leitura</option><option>Curso</option><option>Anotação</option></select></label><label className="wide-field">Observações<textarea rows={3} value={newLibrary.note} onChange={e => setNewLibrary({ ...newLibrary, note: e.target.value })} placeholder="Onde parou? O que quer lembrar?" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShowLibraryForm(false)}>Cancelar</button><button className="primary-button" type="submit"><Plus size={17} /> Salvar item</button></div></form></section></div>}
-    <footer className="footer-note"><span>Feito para a vida real</span><span>·</span><span>Seus dados ficam neste dispositivo nesta fase.</span></footer>
+    <footer className="footer-note"><span>Feito para a vida real</span><span>·</span><span>{syncCode ? 'Dados sincronizados com Supabase.' : 'Dados salvos neste dispositivo. Ative a sincronização para compartilhar.'}</span></footer>
   </div>
 }
 
-function TaskRow({ task, onToggle, rank, showDate = false }: { task: Task; onToggle: () => void; rank?: number; showDate?: boolean }) {
+function TaskRow({ task, onToggle, onDelete, rank, showDate = false }: { task: Task; onToggle: () => void; onDelete?: () => void; rank?: number; showDate?: boolean }) {
   const late = !task.done && urgency(task) === 0
   const dueLabel = task.dueDate === todayISO() ? 'Hoje' : new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: 'short' }).format(new Date(`${task.dueDate}T12:00:00`))
-  return <article className={`task-row ${task.done ? 'task-complete' : ''}`}><button className="task-check" onClick={onToggle} aria-label={task.done ? 'Reabrir tarefa' : 'Concluir tarefa'}>{task.done ? <CheckCircle2 size={21} /> : <Circle size={21} />}</button><div className="task-main"><div className="task-title-line">{rank && !task.done && <span className="rank-chip">{rank}</span>}<b>{task.title}</b></div><div className="task-meta"><span>{task.category}</span><span className="meta-dot">·</span><span><Clock3 size={12} /> {task.duration} min</span>{showDate && <><span className="meta-dot">·</span><span className={late ? 'late-label' : ''}>{late ? 'Atrasada' : dueLabel} {task.dueTime ? `· ${task.dueTime}` : ''}</span></>}</div></div><span className={`priority-pill priority-${task.priority}`}>{task.priority === 'alta' ? 'Alta' : task.priority === 'media' ? 'Média' : 'Baixa'}</span></article>
+  return <article className={`task-row ${task.done ? 'task-complete' : ''}`}><button className="task-check" onClick={onToggle} aria-label={task.done ? 'Reabrir tarefa' : 'Concluir tarefa'}>{task.done ? <CheckCircle2 size={21} /> : <Circle size={21} />}</button><div className="task-main"><div className="task-title-line">{rank && !task.done && <span className="rank-chip">{rank}</span>}<b>{task.title}</b></div><div className="task-meta"><span>{task.category}</span><span className="meta-dot">·</span><span><Clock3 size={12} /> {task.duration} min</span>{showDate && <><span className="meta-dot">·</span><span className={late ? 'late-label' : ''}>{late ? 'Atrasada' : dueLabel} {task.dueTime ? `· ${task.dueTime}` : ''}</span></>}</div></div><span className={`priority-pill priority-${task.priority}`}>{task.priority === 'alta' ? 'Alta' : task.priority === 'media' ? 'Média' : 'Baixa'}</span>{onDelete && <button className="delete-button task-delete-button" onClick={onDelete} aria-label={`Excluir tarefa ${task.title}`} title="Excluir tarefa"><Trash2 size={16} /></button>}</article>
 }
 function PageIntro({ eyebrow, title, text, action }: { eyebrow: string; title: string; text: string; action?: React.ReactNode }) {
   return <div className="page-intro"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p className="subheading">{text}</p></div>{action}</div>
