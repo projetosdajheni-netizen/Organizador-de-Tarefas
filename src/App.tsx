@@ -204,7 +204,7 @@ export default function App() {
   const orderedTasks = useMemo(() => sortTasks(tasks.filter(t => !t.done && !t.deletedAt)), [tasks])
   const todayTasks = orderedTasks.filter(t => t.dueDate === todayISO() || urgency(t) < 3)
   const isSelfCareDay = new Date().getDay() === 0
-  const suggestedTask = isSelfCareDay ? undefined : todayTasks.find(task => task.duration <= availableMinutes)
+  const suggestedTask = isSelfCareDay ? undefined : orderedTasks.find(task => task.duration <= availableMinutes)
   const completedToday = visibleTasks.filter(t => t.done).length
   const todayKey = todayISO()
   const doneHabits = habits.filter(h => h.completed.includes(todayKey)).length
