@@ -3,7 +3,7 @@ name: Publicar no GitHub Pages
 on:
   push:
     branches:
-      - feat/fase-2-supabase-sync
+      - main
   workflow_dispatch:
 
 permissions:
