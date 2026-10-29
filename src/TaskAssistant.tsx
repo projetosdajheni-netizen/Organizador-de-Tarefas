@@ -53,14 +53,16 @@ function parseCreate(text: string): NewAssistantTask | null {
     dueDate = localDate(tomorrow)
   }
   title = title.replace(/\bamanh[aã]\b/gi, '').replace(/\bhoje\b/gi, '')
-  const timeMatch = title.match(/\b(?:as|às)\s*(\d{1,2})(?:\s*h\s*(\d{2})?|:(\d{2}))?\b/i)
+  // Accepts explicit clock formats: "às 14h", "14h30", "14:30" and "9h".
+  // Do not use a trailing word boundary after the accented "às".
+  const timeMatch = title.match(/(?:^|\s)(?:(?:às|as)\s*)?(\d{1,2})(?:\s*h\s*(\d{2})?|:(\d{2}))(?!\d)/i)
   let dueTime = '18:00'
   if (timeMatch) {
     const hour = Number(timeMatch[1])
     const minute = Number(timeMatch[2] || timeMatch[3] || 0)
     if (hour > 23 || minute > 59) return null
     dueTime = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
-    title = title.replace(timeMatch[0], '')
+    title = title.replace(timeMatch[0], ' ')
   }
   const durationMatch = title.match(/\b(?:por|duracao|duração)\s*(\d{1,3})\s*(?:min|minutos)?\b/i)
   const duration = durationMatch ? Math.max(5, Number(durationMatch[1])) : 25
