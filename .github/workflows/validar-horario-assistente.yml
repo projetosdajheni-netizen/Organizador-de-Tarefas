@@ -1,0 +1,29 @@
+name: Validar correção do assistente
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/TaskAssistant.tsx"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/validar-horario-assistente.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Instalar dependências
+        run: npm install
+      - name: Validar TypeScript e gerar build
+        run: npm run build
