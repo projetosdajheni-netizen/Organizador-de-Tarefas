@@ -30,6 +30,18 @@ const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u0
 const datePt = (value: string) => value ? new Intl.DateTimeFormat('pt-BR').format(new Date(value + 'T12:00:00')) : 'Sem prazo'
 const timePt = (value: string) => value || 'Sem horário'
 
+const localDay = (offset = 0) => {
+  const date = new Date()
+  date.setDate(date.getDate() + offset)
+  return localDate(date)
+}
+const isPending = (task: AssistantTask) => !task.done && !task.deletedAt
+const taskPriority = (task: AssistantTask) => ({ alta: 0, media: 1, baixa: 2 })[task.priority]
+const taskOrder = (a: AssistantTask, b: AssistantTask) =>
+  a.dueDate.localeCompare(b.dueDate) || taskPriority(a) - taskPriority(b) || a.dueTime.localeCompare(b.dueTime)
+const formatTask = (task: AssistantTask) =>
+  '• ' + task.title + ' — ' + datePt(task.dueDate) + ' às ' + timePt(task.dueTime) + ' · ' + task.duration + ' min · prioridade ' + task.priority
+
 function findTask(query: string, tasks: AssistantTask[]) {
   const needle = normalize(query.replace(/^["']|["']$/g, '').trim())
   const active = tasks.filter(task => !task.deletedAt)
@@ -147,6 +159,85 @@ export function TaskAssistant({
       return
     }
 
+
+    // Consultas flexíveis: reconhece diferentes formas de perguntar sem exigir uma frase exata.
+    const pendingTasks = activeTasks.filter(isPending)
+    const today = localDay()
+    const tomorrow = localDay(1)
+    const now = new Date()
+    const currentClock = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0')
+    const overdue = pendingTasks.filter(task => task.dueDate < today || (task.dueDate === today && task.dueTime < currentClock))
+    const todayTasks = pendingTasks.filter(task => task.dueDate === today).sort(taskOrder)
+    const tomorrowTasks = pendingTasks.filter(task => task.dueDate === tomorrow).sort(taskOrder)
+
+    if (/(atrasad|vencid|passou do prazo|prazo expir)/i.test(normalized)) {
+      reply(overdue.length
+        ? 'Encontrei ' + overdue.length + ' tarefa(s) atrasada(s):\n' + overdue.map(formatTask).join('\n') + '\n\nPosso ajudar a escolher o que priorizar, sem remarcar nada automaticamente.'
+        : 'Não encontrei tarefas atrasadas entre as tarefas ativas.')
+      return
+    }
+
+    if (/(amanha|dia seguinte)/i.test(normalized) && /(tenho|fazer|tarefas|pendencias|pendentes|programad|agendad|preciso|mostra|quais|o que)/i.test(normalized)) {
+      reply(tomorrowTasks.length
+        ? 'Para amanhã, encontrei ' + tomorrowTasks.length + ' tarefa(s):\n' + tomorrowTasks.map(formatTask).join('\n')
+        : 'Você não tem tarefas pendentes para amanhã.')
+      return
+    }
+
+    if (/(hoje|para hoje|neste dia)/i.test(normalized) && /(tenho|fazer|tarefas|pendencias|pendentes|programad|agendad|preciso|mostra|quais|o que|importante|priorid)/i.test(normalized)) {
+      reply(todayTasks.length
+        ? 'Para hoje, estas são suas ' + todayTasks.length + ' tarefa(s) pendentes, em ordem de prazo e prioridade:\n' + todayTasks.map(formatTask).join('\n')
+        : 'Você não tem tarefas pendentes para hoje.')
+      return
+    }
+
+    if (/(quanto tempo|tempo total|soma.*minutos|minutos.*tarefas)/i.test(normalized)) {
+      const total = todayTasks.reduce((sum, task) => sum + task.duration, 0)
+      reply(todayTasks.length
+        ? 'Suas ' + todayTasks.length + ' tarefa(s) pendentes de hoje somam ' + total + ' minutos (' + Math.floor(total / 60) + 'h ' + total % 60 + 'min).'
+        : 'Você não tem tarefas pendentes para hoje, então não há tempo de tarefas a somar.')
+      return
+    }
+
+    if (/(pouco tempo|tempo livre|consigo fazer|cabe no meu tempo|em \d+\s*(?:min|minutos)|meia hora|30 minutos)/i.test(normalized)) {
+      const durationMatch = normalized.match(/(\d{1,3})\s*(?:min|minutos)/)
+      const available = durationMatch ? Number(durationMatch[1]) : 30
+      const fitting = pendingTasks.filter(task => task.duration <= available).sort((a, b) => taskPriority(a) - taskPriority(b) || a.duration - b.duration || taskOrder(a, b))
+      reply(fitting.length
+        ? 'Com ' + available + ' minutos, estas tarefas cabem no tempo disponível:\n' + fitting.slice(0, 8).map(formatTask).join('\n') + '\n\nA sugestão é escolher apenas uma. Não alterei sua agenda.'
+        : 'Não encontrei tarefa pendente com duração de até ' + available + ' minutos. Você pode aumentar o tempo disponível ou dividir uma atividade manualmente.')
+      return
+    }
+
+    if (/(deixar para depois|adiar|postergar|o que pode esperar|o que posso deixar|menos urgente)/i.test(normalized)) {
+      const candidates = [...pendingTasks].sort((a, b) =>
+        taskPriority(b) - taskPriority(a) || b.dueDate.localeCompare(a.dueDate) || b.dueTime.localeCompare(a.dueTime))
+      reply(candidates.length
+        ? 'Estas são candidatas a esperar, considerando prioridade mais baixa e prazos mais distantes:\n' + candidates.slice(0, 5).map(formatTask).join('\n') + '\n\nÉ apenas uma sugestão: não mudei nenhum prazo.'
+        : 'Não há tarefas pendentes para avaliar neste momento.')
+      return
+    }
+
+    if (/(organize|organizar|organiza|priorize|priorizar|mais importante|por onde comec|o que faco primeiro|sem sobrecarregar)/i.test(normalized)) {
+      const candidates = [...pendingTasks].sort((a, b) => {
+        const aLate = a.dueDate < today || (a.dueDate === today && a.dueTime < currentClock)
+        const bLate = b.dueDate < today || (b.dueDate === today && b.dueTime < currentClock)
+        return Number(bLate) - Number(aLate) || taskPriority(a) - taskPriority(b) || taskOrder(a, b)
+      })
+      reply(candidates.length
+        ? 'Para evitar sobrecarga, sugiro começar por até três tarefas:\n' + candidates.slice(0, 3).map((task, index) => (index + 1) + '. ' + formatTask(task)).join('\n') + '\n\nO restante pode continuar na lista. Esta é uma recomendação; não reorganizei nem alterei seus prazos.'
+        : 'Não há tarefas pendentes para organizar.')
+      return
+    }
+
+    if (/(prioridade alta|urgente|mais prioritarias)/i.test(normalized)) {
+      const candidates = pendingTasks.filter(task => task.priority === 'alta').sort(taskOrder)
+      reply(candidates.length
+        ? 'Tarefas pendentes com prioridade alta:\n' + candidates.map(formatTask).join('\n')
+        : 'Não encontrei tarefas pendentes com prioridade alta.')
+      return
+    }
+
     const create = parseCreate(command)
     if (create) {
       setPending({ kind: 'create', task: create })
@@ -185,7 +276,7 @@ export function TaskAssistant({
       return
     }
 
-    reply('Ainda não reconheci esse pedido. Experimente: “listar tarefas”, “criar tarefa estudar AWS amanhã às 14h”, “editar tarefa estudar AWS para revisar AWS” ou “excluir tarefa estudar AWS”.')
+    reply('Ainda não consegui identificar o que você quer fazer. Você pode perguntar de outras maneiras, por exemplo: “o que tenho para amanhã?”, “quais tarefas estão atrasadas?”, “tenho 30 minutos, o que cabe nesse tempo?”, “o que posso deixar para depois?” ou “organize minhas prioridades”. Também posso criar, editar, concluir e excluir tarefas, sempre pedindo confirmação antes de alterar algo.')
   }
 
   return <div className="assistant-widget">
