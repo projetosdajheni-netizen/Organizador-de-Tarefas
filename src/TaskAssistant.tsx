@@ -151,7 +151,7 @@ export function TaskAssistant({
       return
     }
 
-    if (/(listar|liste|mostra|mostrar|quais|consultar|consulta|ver|veja).*(tarefas|pendencias|pendentes|concluidas)|^(tarefas|minhas tarefas)$/i.test(normalized)) {
+    if (!/(atrasad|vencid|amanha|hoje|pouco tempo|tempo livre|deixar para depois|adiar|postergar|organize|organizar|priorize|priorizar|mais importante|sem sobrecarregar)/i.test(normalized) && /(listar|liste|mostra|mostrar|quais|consultar|consulta|ver|veja).*(tarefas|pendencias|pendentes|concluidas)|^(tarefas|minhas tarefas)$/i.test(normalized)) {
       const selected = activeTasks.slice().sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.dueTime.localeCompare(b.dueTime))
       if (!selected.length) { reply('Você não tem tarefas cadastradas no momento.'); return }
       const lines = selected.slice(0, 12).map(task => `• ${task.done ? '✓' : '○'} ${task.title} — ${datePt(task.dueDate)} às ${timePt(task.dueTime)}`)
