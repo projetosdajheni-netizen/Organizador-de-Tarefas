@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Bot, Check, ListTodo, Send, Sparkles, X } from 'lucide-react'
+import './assistant.css'
 
 type AssistantTask = {
   id: string
