@@ -1,0 +1,25 @@
+name: Validar Fase 5 - Assistente gratuito
+
+on:
+  push:
+    branches:
+      - feat/fase-5-assistente-gratuito
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Instalar dependências
+        run: npm install
+      - name: Validar TypeScript e gerar build
+        run: npm run build
