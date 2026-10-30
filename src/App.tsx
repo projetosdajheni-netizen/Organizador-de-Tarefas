@@ -102,7 +102,7 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState('Conectando à sua conta…')
   const [session, setSession] = useState<Session | null>(null)
   const [authReady, setAuthReady] = useState(false)
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login')
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'recovery' | 'updatePassword'>('login')
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
   const [authBusy, setAuthBusy] = useState(false)
@@ -129,7 +129,7 @@ export default function App() {
   useEffect(() => {
     let alive = true
     supabase.auth.getSession().then(({ data }) => { if (alive) { setSession(data.session); setAuthReady(true) } }).catch(() => { if (alive) setAuthReady(true) })
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => { setSession(nextSession); setAuthReady(true); if (!nextSession) { setSyncReady(false); setSyncStatus('Entre para acessar seus dados') } })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => { if (event === 'PASSWORD_RECOVERY') { setAuthMode('updatePassword'); setAuthError(''); setAuthMessage('Defina uma nova senha para sua conta.') } setSession(nextSession); setAuthReady(true); if (!nextSession) { setSyncReady(false); setSyncStatus('Entre para acessar seus dados') } })
     return () => { alive = false; subscription.unsubscribe() }
   }, [])
   useEffect(() => {
@@ -205,9 +205,40 @@ export default function App() {
   async function submitAuth(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault(); setAuthBusy(true); setAuthError(''); setAuthMessage('')
     try {
-      if (authMode === 'signup') { const { data, error } = await supabase.auth.signUp({ email: authEmail.trim(), password: authPassword, options: { emailRedirectTo: window.location.origin + window.location.pathname } }); if (error) throw error; if (!data.session) setAuthMessage('Cadastro iniciado. Confira seu e-mail para confirmar a conta e depois entre.') }
-      else { const { error } = await supabase.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword }); if (error) throw error }
-    } catch (error) { setAuthError(error instanceof Error ? error.message : 'Não foi possível autenticar.') } finally { setAuthBusy(false) }
+      const email = authEmail.trim()
+      const redirectTo = window.location.origin + window.location.pathname
+      if (authMode === 'signup') {
+        const { data, error } = await supabase.auth.signUp({ email, password: authPassword, options: { emailRedirectTo: redirectTo } })
+        if (error) throw error
+        if (!data.session) setAuthMessage('Cadastro iniciado. Confira sua caixa de entrada e confirme o e-mail antes de entrar.')
+      } else if (authMode === 'recovery') {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
+        if (error) throw error
+        setAuthMessage('Se esse e-mail estiver cadastrado, você receberá um link para redefinir a senha. Confira também o spam.')
+      } else if (authMode === 'updatePassword') {
+        const { error } = await supabase.auth.updateUser({ password: authPassword })
+        if (error) throw error
+        await supabase.auth.signOut()
+        setAuthMode('login'); setAuthPassword('')
+        setAuthMessage('Senha atualizada. Agora entre com sua nova senha.')
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password: authPassword })
+        if (error) throw error
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Não foi possível autenticar.'
+      setAuthError(/email not confirmed/i.test(message) ? 'Seu e-mail ainda não foi confirmado. Use “Reenviar confirmação de e-mail” abaixo.' : message)
+    } finally { setAuthBusy(false) }
+  }
+  async function resendConfirmation() {
+    setAuthBusy(true); setAuthError(''); setAuthMessage('')
+    try {
+      if (!authEmail.trim()) throw new Error('Digite seu e-mail no campo acima antes de solicitar a confirmação.')
+      const { error } = await supabase.auth.resend({ type: 'signup', email: authEmail.trim(), options: { emailRedirectTo: window.location.origin + window.location.pathname } })
+      if (error) throw error
+      setAuthMessage('Solicitação enviada. Confira sua caixa de entrada e o spam.')
+    } catch (error) { setAuthError(error instanceof Error ? error.message : 'Não foi possível reenviar a confirmação.') }
+    finally { setAuthBusy(false) }
   }
   async function signOut() { await supabase.auth.signOut(); setTab('Hoje'); setSyncReady(false); setTasks(starterTasks); setHabits(starterHabits); setLibrary(starterLibrary); setFocusSessions([]) }
   useEffect(() => {
@@ -268,7 +299,7 @@ export default function App() {
   ]
 
   if (!authReady) return <main className="auth-shell"><section className="auth-card"><span className="brand-mark"><Waves size={20} /></span><h1>Meu Ritmo</h1><p>Verificando sua sessão segura…</p></section></main>
-  if (!session) return <main className="auth-shell"><section className="auth-card"><span className="brand-mark"><Waves size={20} /></span><p className="eyebrow">SEU ESPAÇO PESSOAL</p><h1>meu <b>ritmo</b></h1><p className="auth-subtitle">Entre para acessar suas tarefas, hábitos, foco e biblioteca.</p><form className="auth-form" onSubmit={submitAuth}><label>E-mail<input type="email" autoComplete="email" required value={authEmail} onChange={e => setAuthEmail(e.target.value)} placeholder="voce@exemplo.com" /></label><label>Senha<input type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} minLength={6} required value={authPassword} onChange={e => setAuthPassword(e.target.value)} placeholder="Mínimo de 6 caracteres" /></label>{authError && <p className="auth-error" role="alert">{authError}</p>}{authMessage && <p className="auth-message" role="status">{authMessage}</p>}<button className="primary-button auth-submit" type="submit" disabled={authBusy}>{authBusy ? "Aguarde…" : authMode === "login" ? "Entrar" : "Criar conta"}</button></form><p className="auth-switch">{authMode === "login" ? "Ainda não tem conta?" : "Já tem uma conta?"} <button type="button" onClick={() => { setAuthMode(authMode === "login" ? "signup" : "login"); setAuthError(""); setAuthMessage("") }}>{authMode === "login" ? "Criar conta" : "Entrar"}</button></p><p className="auth-privacy">Suas informações ficam vinculadas à sua conta.</p></section></main>
+  if (!session) return <main className="auth-shell"><section className="auth-card"><span className="brand-mark"><Waves size={20} /></span><p className="eyebrow">SEU ESPAÇO PESSOAL</p><h1>meu <b>ritmo</b></h1><p className="auth-subtitle">Entre para acessar suas tarefas, hábitos, foco e biblioteca.</p><form className="auth-form" onSubmit={submitAuth}>{authMode !== 'updatePassword' && <label>E-mail<input type="email" autoComplete="email" required value={authEmail} onChange={e => setAuthEmail(e.target.value)} placeholder="voce@exemplo.com" /></label>}{authMode !== 'recovery' && <label>{authMode === 'updatePassword' ? 'Nova senha' : 'Senha'}<input type="password" autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} minLength={6} required value={authPassword} onChange={e => setAuthPassword(e.target.value)} placeholder="Mínimo de 6 caracteres" /></label>}{authError && <p className="auth-error" role="alert">{authError}</p>}{authMessage && <p className="auth-message" role="status">{authMessage}</p>}<button className="primary-button auth-submit" type="submit" disabled={authBusy}>{authBusy ? "Aguarde…" : authMode === 'login' ? "Entrar" : authMode === 'signup' ? "Criar conta" : authMode === 'recovery' ? "Enviar link de recuperação" : "Salvar nova senha"}</button></form>{authMode === 'login' ? <><p className="auth-switch">Ainda não tem conta? <button type="button" onClick={() => { setAuthMode('signup'); setAuthError(''); setAuthMessage('') }}>Criar conta</button></p><p className="auth-switch"><button type="button" disabled={authBusy} onClick={() => { setAuthMode('recovery'); setAuthError(''); setAuthMessage('') }}>Esqueci minha senha</button></p><p className="auth-switch"><button type="button" disabled={authBusy} onClick={resendConfirmation}>Reenviar confirmação de e-mail</button></p></> : <p className="auth-switch"><button type="button" onClick={() => { setAuthMode('login'); setAuthError(''); setAuthMessage(''); setAuthPassword('') }}>Voltar para entrar</button></p>}<p className="auth-privacy">Suas informações ficam vinculadas à sua conta.</p></section></main>
   if (session && !syncReady) return <main className="auth-shell"><section className="auth-card"><span className="brand-mark"><Waves size={20} /></span><h1>meu <b>ritmo</b></h1><p>{syncStatus}</p><button className="secondary-button" onClick={signOut}>Sair</button></section></main>
 
   return <div className="app-shell">
