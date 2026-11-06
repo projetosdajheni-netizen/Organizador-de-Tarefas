@@ -5,7 +5,7 @@ import { TaskAssistant } from './TaskAssistant'
 import { MeuAgora } from './MeuAgora'
 import { loadRemote, saveRemote, claimLegacyData, type FocusSession, type SyncData } from './supabaseSync'
 import {
-  AlarmClock, BookOpen, Check, CheckCircle2, ChevronRight,
+  AlarmClock, BookOpen, Check, CheckCircle2,
   Circle, Clock3, Coffee, Flame, Leaf, ListTodo, Pause, Play, Plus,
   RotateCcw, Sparkles, Target, TimerReset, Trash2, Waves, X
 } from 'lucide-react'
