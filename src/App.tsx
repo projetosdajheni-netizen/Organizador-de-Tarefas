@@ -2,14 +2,15 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 import { TaskAssistant } from './TaskAssistant'
+import { MeuAgora } from './MeuAgora'
 import { loadRemote, saveRemote, claimLegacyData, type FocusSession, type SyncData } from './supabaseSync'
 import {
-  AlarmClock, BookOpen, CalendarDays, Check, CheckCircle2, ChevronRight,
+  AlarmClock, BookOpen, Check, CheckCircle2, ChevronRight,
   Circle, Clock3, Coffee, Flame, Leaf, ListTodo, Pause, Play, Plus,
   RotateCcw, Sparkles, Target, TimerReset, Trash2, Waves, X
 } from 'lucide-react'
 
-type Tab = 'Hoje' | 'Tarefas' | 'Hábitos' | 'Foco' | 'Biblioteca'
+type Tab = 'Meu Agora' | 'Tarefas' | 'Hábitos' | 'Foco' | 'Biblioteca'
 type Task = {
   id: string; title: string; dueDate: string; dueTime: string; duration: number
   priority: 'alta' | 'media' | 'baixa'; availability: 'qualquer' | 'manha' | 'tarde' | 'noite'
@@ -23,7 +24,6 @@ const todayISO = () => {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
-const dateLabel = new Intl.DateTimeFormat('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())
 const id = () => Math.random().toString(36).slice(2, 10)
 const starterTasks: Task[] = [
   { id: 't1', title: 'Separar 25 minutos para me movimentar', dueDate: todayISO(), dueTime: '05:00', duration: 25, priority: 'media', availability: 'manha', done: false, createdAt: 1, category: 'Bem-estar' },
@@ -91,7 +91,7 @@ function formatTime(seconds: number) {
 
 export default function App() {
   const saved = useMemo(readSaved, [])
-  const [tab, setTab] = useState<Tab>(saved.activeTab || 'Hoje')
+  const [tab, setTab] = useState<Tab>((String(saved.activeTab) === 'Hoje' ? 'Meu Agora' : saved.activeTab) || 'Meu Agora')
   const [tasks, setTasks] = useState<Task[]>(saved.tasks || starterTasks)
   const [habits, setHabits] = useState<Habit[]>(saved.habits || starterHabits)
   const [library, setLibrary] = useState<LibraryItem[]>(saved.library || starterLibrary)
@@ -109,7 +109,6 @@ export default function App() {
   const [authError, setAuthError] = useState('')
   const [authMessage, setAuthMessage] = useState('')
   const [historyPeriod, setHistoryPeriod] = useState<'week' | 'month'>('week')
-  const [availableMinutes, setAvailableMinutes] = useState(25)
   const [secondsLeft, setSecondsLeft] = useState((saved.focusMinutes || 25) * 60)
   const [running, setRunning] = useState(false)
   const [showTaskForm, setShowTaskForm] = useState(false)
@@ -240,7 +239,7 @@ export default function App() {
     } catch (error) { setAuthError(error instanceof Error ? error.message : 'Não foi possível reenviar a confirmação.') }
     finally { setAuthBusy(false) }
   }
-  async function signOut() { await supabase.auth.signOut(); setTab('Hoje'); setSyncReady(false); setTasks(starterTasks); setHabits(starterHabits); setLibrary(starterLibrary); setFocusSessions([]) }
+  async function signOut() { await supabase.auth.signOut(); setTab('Meu Agora'); setSyncReady(false); setTasks(starterTasks); setHabits(starterHabits); setLibrary(starterLibrary); setFocusSessions([]) }
   useEffect(() => {
     if (!running) return
     const timer = window.setInterval(() => setSecondsLeft(s => {
@@ -253,10 +252,6 @@ export default function App() {
 
   const visibleTasks = tasks.filter(t => !t.deletedAt)
   const orderedTasks = useMemo(() => sortTasks(tasks.filter(t => !t.done && !t.deletedAt)), [tasks])
-  const todayTasks = orderedTasks.filter(t => t.dueDate === todayISO() || urgency(t) < 3)
-  const isSelfCareDay = new Date().getDay() === 0
-  const suggestedTask = isSelfCareDay ? undefined : orderedTasks.find(task => task.duration <= availableMinutes)
-  const completedToday = visibleTasks.filter(t => t.done).length
   const todayKey = todayISO()
   const doneHabits = habits.filter(h => h.completed.includes(todayKey)).length
   const historyStart = new Date()
@@ -267,7 +262,6 @@ export default function App() {
   const habitCompletionsInPeriod = habits.reduce((sum, h) => sum + h.completed.filter(day => day >= historyStartKey && day <= todayKey).length, 0)
   const tasksCompletedInPeriod = tasks.filter(t => t.done && t.completedAt && new Date(t.completedAt) >= historyStart).length
   const focusMinutesInPeriod = focusSessions.filter(s => new Date(s.started_at) >= historyStart).reduce((sum, s) => sum + s.duration_minutes, 0)
-  const greeting = new Date().getHours() < 12 ? 'Bom dia' : new Date().getHours() < 18 ? 'Boa tarde' : 'Boa noite'
 
   function toggleTask(taskId: string) {
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, done: !t.done, completedAt: !t.done ? new Date().toISOString() : null } : t))
@@ -294,7 +288,7 @@ export default function App() {
     setShowLibraryForm(false)
   }
   const nav: { name: Tab; icon: typeof ListTodo }[] = [
-    { name: 'Hoje', icon: CalendarDays }, { name: 'Tarefas', icon: ListTodo },
+    { name: 'Meu Agora', icon: Sparkles }, { name: 'Tarefas', icon: ListTodo },
     { name: 'Hábitos', icon: Leaf }, { name: 'Foco', icon: TimerReset }, { name: 'Biblioteca', icon: BookOpen },
   ]
 
@@ -304,41 +298,21 @@ export default function App() {
 
   return <div className="app-shell">
     <header className="topbar">
-      <a className="brand" href="#inicio" onClick={e => { e.preventDefault(); setTab('Hoje') }} aria-label="Meu Ritmo, início">
+      <a className="brand" href="#inicio" onClick={e => { e.preventDefault(); setTab('Meu Agora') }} aria-label="Meu Ritmo, início">
         <span className="brand-mark"><Waves size={20} /></span><span>meu <b>ritmo</b></span>
       </a>
       <div className="topbar-right"><span className="soft-status"><span className="status-dot" /> {syncStatus}</span><button className="secondary-button" onClick={signOut}>Sair</button><button className="avatar" aria-label="Perfil">{session.user.email?.slice(0,1).toUpperCase() || "U"}</button></div>
     </header>
     <main className="main-content">
-      {tab === 'Hoje' && <section className="today-view">
-        <div className="welcome-row">
-          <div><p className="eyebrow">{dateLabel}</p><h1>{greeting}, Jhenifer <span className="wave">✳</span></h1><p className="subheading">Um passo de cada vez. O suficiente também conta.</p></div>
-          <div className="daily-stamp"><Sparkles size={19} /><span>Seu dia<br /><b>com leveza</b></span></div>
-        </div>
-        <section className="hero-card">
-          <div className="hero-copy"><span className="hero-kicker"><Leaf size={14} /> UM DIA POSSÍVEL</span><h2>Você não precisa<br />dar conta de tudo.</h2><p>Escolha o que cabe no dia de hoje. O resto pode esperar.</p><button className="hero-button" onClick={() => setTab('Tarefas')}>Organizar meu dia <ChevronRight size={16} /></button></div>
-          <div className="hero-art" aria-hidden="true"><div className="sun" /><div className="hill hill-back" /><div className="hill hill-front" /><div className="art-leaf"><Leaf size={38} /></div></div>
-        </section>
-        <div className="section-heading"><div><p className="eyebrow">SEM PRESSA, MAS COM INTENÇÃO</p><h2>Seu panorama de hoje</h2></div><button className="text-button" onClick={() => setTab('Tarefas')}>Ver tarefas <ChevronRight size={15} /></button></div>
-        <div className="stat-grid">
-          <article className="stat-card stat-green"><span className="stat-icon"><CheckCircle2 size={19} /></span><span className="stat-label">Tarefas concluídas</span><strong>{completedToday}<small> no total</small></strong><div className="progress-track"><span style={{ width: tasks.length ? `${Math.min(100, completedToday / tasks.length * 100)}%` : '0%' }} /></div></article>
-          <article className="stat-card stat-sand"><span className="stat-icon"><Leaf size={19} /></span><span className="stat-label">Hábitos de hoje</span><strong>{doneHabits}<small> de {habits.length}</small></strong><div className="progress-track"><span style={{ width: habits.length ? `${doneHabits / habits.length * 100}%` : '0%' }} /></div></article>
-          <article className="stat-card stat-blue"><span className="stat-icon"><Clock3 size={19} /></span><span className="stat-label">Próximo passo</span><strong className="next-step">{todayTasks[0] ? todayTasks[0].title : 'Pausa merecida'}</strong><span className="tiny-note">{todayTasks[0] ? `${todayTasks[0].duration} min · ${todayTasks[0].category}` : 'Você pode respirar.'}</span></article>
-        </div>
-        <section className="planning-card">
-          <div className="planning-heading"><span className="planning-icon"><Sparkles size={18} /></span><div><p className="eyebrow">PLANEJAMENTO FLEXÍVEL</p><h2>O que cabe no seu tempo?</h2></div></div>
-          {isSelfCareDay ? <div className="planning-rest"><Coffee size={21} /><div><b>Domingo protegido: seu dia de autocuidado</b><p>Hoje, a sugestão é descansar. Nenhuma tarefa será remarcada ou alterada automaticamente.</p></div></div> : <>
-            <p className="planning-description">Escolha quanto tempo você tem livre. Vou sugerir uma tarefa que caiba nesse intervalo, sem alterar sua agenda.</p>
-            <div className="time-options" role="group" aria-label="Tempo livre disponível">{[15, 25, 45, 60].map(minutes => <button key={minutes} className={availableMinutes === minutes ? 'time-option active' : 'time-option'} onClick={() => setAvailableMinutes(minutes)}>{minutes} min</button>)}</div>
-            <div className="planning-recommendation">{suggestedTask ? <><span className="recommendation-label">SUGESTÃO PARA AGORA</span><b>{suggestedTask.title}</b><span>{suggestedTask.duration} min · {suggestedTask.category} · prioridade {suggestedTask.priority === 'alta' ? 'alta' : suggestedTask.priority === 'media' ? 'média' : 'baixa'}</span><button className="text-button" onClick={() => setTab('Tarefas')}>Ver tarefa <ChevronRight size={15} /></button></> : <><b>Nenhuma tarefa cadastrada cabe nesse intervalo.</b><span>Você pode aumentar o tempo disponível ou cadastrar uma atividade curta de estudo, leitura ou bem-estar.</span><button className="text-button" onClick={() => setShowTaskForm(true)}>Adicionar tarefa <Plus size={15} /></button></>}</div>
-          </>}
-        </section>
-        <div className="section-heading task-section-heading"><div><p className="eyebrow">PEQUENAS AÇÕES, GRANDES CAMINHOS</p><h2>O que vem primeiro</h2></div><button className="round-add" onClick={() => setShowTaskForm(true)} aria-label="Adicionar tarefa"><Plus size={19} /></button></div>
-        <div className="task-list">
-          {todayTasks.length ? todayTasks.slice(0, 4).map((task, i) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onDelete={() => deleteTask(task)} rank={i + 1} />) : <EmptyState title="Seu dia está aberto" text="Adicione uma tarefa quando quiser dar forma ao seu tempo." />}
-        </div>
-        <button className="gentle-prompt" onClick={() => setTab('Foco')}><span className="prompt-icon"><Coffee size={20} /></span><span><b>Um intervalo também é produtividade</b><small>Faça uma pausa curta ou comece um ciclo de foco.</small></span><ChevronRight size={18} /></button>
-      </section>}
+      {tab === 'Meu Agora' && <MeuAgora
+        tasks={visibleTasks}
+        habits={habits}
+        library={library}
+        onToggleHabit={toggleHabit}
+        onOpenTasks={() => setTab('Tarefas')}
+        onOpenFocus={() => setTab('Foco')}
+        onOpenLibrary={() => setTab('Biblioteca')}
+      />}
 
       {tab === 'Tarefas' && <section className="page-view">
         <PageIntro eyebrow="UM PASSO DE CADA VEZ" title="Tarefas" text="Organize o que precisa ser feito sem transformar tudo em urgência." action={<button className="primary-button" onClick={() => setShowTaskForm(true)}><Plus size={17} /> Nova tarefa</button>} />
